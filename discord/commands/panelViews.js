@@ -107,6 +107,15 @@ function buildVoiceStatusControls(current, page) {
     return row;
 }
 
+function formatModalInputLabel(emoji, labelText) {
+    if (!emoji) return labelText;
+    if (emoji.startsWith("<") && emoji.endsWith(">")) {
+        return labelText;
+    }
+    const combined = `${emoji} ${labelText}`;
+    return combined.length <= 45 ? combined : labelText;
+}
+
 function buildStartModal() {
     const modal = new Modal()
         .setCustomId(IDS.MODAL_START)
@@ -125,7 +134,7 @@ function buildStartModal() {
         new MessageActionRow().addComponents(
             new TextInputComponent()
                 .setCustomId(IDS.FIELD_SERVER_ID)
-                .setLabel(`${config.emojis.server_icon} ไอดีเซิร์ฟเวอร์`)
+                .setLabel(formatModalInputLabel(config.emojis?.server_icon, "ไอดีเซิร์ฟเวอร์"))
                 .setStyle("SHORT")
                 .setRequired(true)
         ),
@@ -133,7 +142,7 @@ function buildStartModal() {
         new MessageActionRow().addComponents(
             new TextInputComponent()
                 .setCustomId(IDS.FIELD_VOICE_ID)
-                .setLabel(`${config.emojis.voice_ch} ไอดีช่องเสียง`)
+                .setLabel(formatModalInputLabel(config.emojis?.voice_ch, "ไอดีช่องเสียง"))
                 .setStyle("SHORT")
                 .setRequired(true)
         )
