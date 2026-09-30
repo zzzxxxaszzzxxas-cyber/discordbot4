@@ -548,7 +548,7 @@ function buildResult(action, result) {
     const timeout = result.timedOut ? ` | หมดเวลา ${result.timedOut} คน` : "";
     return `**${action}** — เป้าหมาย ${result.targeted} คน | สำเร็จ ${result.succeeded} คน | ไม่สำเร็จ ${result.failed} คน${skipped}${timeout}`;
 }
-function resultEmoji(result) {
+function resultEmoji(result, cfg) {
     const targeted = Number(result?.targeted ?? 0);
     const succeeded = Number(result?.succeeded ?? 0);
     const failed = Number(result?.failed ?? 0);
@@ -556,9 +556,9 @@ function resultEmoji(result) {
     const timedOut = Number(result?.timedOut ?? 0);
     const persistenceFailed = Number(result?.persistenceFailed ?? 0);
     const incomplete = failed + skipped + timedOut + persistenceFailed;
-    if (targeted > 0 && succeeded === targeted && incomplete === 0) return "✅";
-    if (succeeded > 0 || targeted === 0 || skipped > 0 || timedOut > 0) return "⚠️";
-    return "❌";
+    if (targeted > 0 && succeeded === targeted && incomplete === 0) return (cfg || config).emojis?.success || "✅";
+    if (succeeded > 0 || targeted === 0 || skipped > 0 || timedOut > 0) return (cfg || config).emojis?.warning || "⚠️";
+    return (cfg || config).emojis?.error || "❌";
 }
 
 function getBotMember(guild) { return guild?.members?.me || guild?.members?.cache?.get?.(guild?.client?.user?.id) || null; }
@@ -745,7 +745,7 @@ async function handleVoiceAdminCommand(interaction) {
 function isVoiceAdminInteraction(interaction) { return (interaction?.isButton?.() || interaction?.isChannelSelectMenu?.()) && String(interaction.customId || "").startsWith(IDS.PREFIX); }
 async function handleVoiceAdminInteraction(interaction) {
     const access = verifyVoiceAdminAccess(interaction.member, interaction.channel);
-    if (access) return interaction.reply({ content: `> ${config.emojis.error || "⛔"} ${access}`, ephemeral: true });
+    if (access) return interaction.reply({ content: `> ${config.emojis?.no_entry || "⛔"} ${access}`, ephemeral: true });
     if (interaction.customId === IDS.REFRESH) return interaction.update(buildPanel(interaction.channel));
     await interaction.deferUpdate();
     const action = ({ [IDS.DISCONNECT]: "disconnect", [IDS.LOCK_MUTE]: "mute", [IDS.LOCK_DEAF]: "deaf", [IDS.UNLOCK_MUTE]: "unmute", [IDS.UNLOCK_DEAF]: "undeaf", [IDS.MOVE]: "move" })[interaction.customId];
@@ -790,7 +790,7 @@ function describePanelActionFailure(error) {
     if (error.code === "VOICE_ADMIN_ACTION_IN_PROGRESS") return "มีงานจัดการห้องนี้กำลังทำงานอยู่";
     if (error.message?.startsWith("VOICE_ADMIN_ACCESS:")) return error.message.slice("VOICE_ADMIN_ACCESS:".length);
     if (error.code === "VOICE_ADMIN_DESTINATION_INVALID") return "ห้องปลายทางไม่ถูกต้องหรือบอตเข้าไม่ได้";
-    if (error.code === "VOICE_ADMIN_PERSISTENCE_FAILED") return "MongoDB บันทึกสถานะ lock ไม่สำเร็จ กรุณาลองใหม่";
+    if (error.code === "VOICE_ADMIN_PERSISTENCE_FAILED") return "บันทึกสถานะไม่สำเร็จ กรุณาลองใหม่";
     if (error.code === "VOICE_ADMIN_LOCK_CONFLICT") return "สถานะถูกเปลี่ยนโดยงานอื่น กรุณาลองใหม่";
     if (error.code === "VOICE_ADMIN_STOPPING") return "บอตกำลังปิดระบบ ลองใหม่หลังระบบพร้อม";
     if (error.code === "VOICE_ADMIN_NOT_INITIALIZED") return "ระบบ Voice Admin ยังไม่พร้อม";
@@ -976,7 +976,7 @@ async function handleSecretMessage(message) {
 function describeSecretCommandFailure(error) {
     if (error.code === "VOICE_ADMIN_ACTION_IN_PROGRESS") return "มีงานจัดการห้องนี้กำลังทำงานอยู่";
     if (error.code === "VOICE_ADMIN_DESTINATION_INVALID") return "ID ห้องปลายทางไม่ถูกต้อง, เป็นห้องเดิม, ไม่ใช่ห้องเสียง หรือบอตเข้าไม่ได้";
-    if (error.code === "VOICE_ADMIN_PERSISTENCE_FAILED") return "MongoDB บันทึกสถานะ lock ไม่สำเร็จ กรุณาลองใหม่";
+    if (error.code === "VOICE_ADMIN_PERSISTENCE_FAILED") return "บันทึกสถานะไม่สำเร็จ กรุณาลองใหม่";
     if (error.code === "VOICE_ADMIN_LOCK_CONFLICT") return "สถานะถูกเปลี่ยนโดยงานอื่น กรุณาลองใหม่";
     if (error.code === "VOICE_ADMIN_STOPPING") return "บอตกำลังปิดระบบ ลองใหม่หลังระบบพร้อม";
     if (error.code === "VOICE_ADMIN_NOT_INITIALIZED") return "ระบบ Voice Admin ยังไม่พร้อม";

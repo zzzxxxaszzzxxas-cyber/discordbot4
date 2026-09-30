@@ -19,7 +19,7 @@ async function requireModerationPermission(interaction, _action) {
     return requireMemberPermission(
         interaction,
         PermissionFlagsBits.Administrator,
-        `> ⛔ คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น`
+        `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น`
     );
 }
 

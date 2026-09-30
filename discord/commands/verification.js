@@ -973,7 +973,7 @@ function verificationRecoverySummary(err = {}) {
 
 function verificationSetupFailureMessage(err = {}) {
     return `> ${config.emojis.error} ติดตั้งแผงยืนยันไม่สำเร็จ${verificationRecoverySummary(err)}\n` +
-        `> ตรวจสอบสิทธิ์ของบอทและสถานะฐานข้อมูล แล้วลองใหม่`;
+        `> ตรวจสอบสิทธิ์ของบอทและสถานะระบบ แล้วลองใหม่`;
 }
 
 async function executeDirectRoleAssignment(interaction, member, role, roleId) {
