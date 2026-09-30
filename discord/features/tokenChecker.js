@@ -3,6 +3,7 @@
 const { AttachmentBuilder, MessageEmbed } = require('../core/discordCompat');
 const { buildUserHeaders } = require('../quest/core/clientProfile');
 const tokenCoordinator = require('../core/tokenCoordinator');
+const config = require('../config.json');
 
 const THEME_COLORS = Object.freeze({
     BOOST: '#EB459E',
@@ -359,6 +360,7 @@ async function checkBatchTokens(tokens = [], optionsOrDelay = {}) {
 
     let batchSize = 5;
     let delayMs = 150;
+    let onProgress = null;
 
     if (typeof optionsOrDelay === 'number') {
         delayMs = Math.min(optionsOrDelay, 200);
@@ -368,6 +370,9 @@ async function checkBatchTokens(tokens = [], optionsOrDelay = {}) {
         }
         if (Number.isFinite(optionsOrDelay.delayMs) && optionsOrDelay.delayMs >= 0) {
             delayMs = optionsOrDelay.delayMs;
+        }
+        if (typeof optionsOrDelay.onProgress === 'function') {
+            onProgress = optionsOrDelay.onProgress;
         }
     }
 
@@ -381,6 +386,14 @@ async function checkBatchTokens(tokens = [], optionsOrDelay = {}) {
             results.push(res);
             if (groups[res.category]) {
                 groups[res.category].push(res);
+            }
+        }
+
+        if (onProgress) {
+            try {
+                await onProgress(results.length, list.length);
+            } catch {
+                // Ignore progress callback errors
             }
         }
 
@@ -406,15 +419,21 @@ async function checkBatchTokens(tokens = [], optionsOrDelay = {}) {
 }
 
 function buildSingleTokenEmbed(result) {
+    const errorEmoji = config.emojis?.error || '❌';
+    const successEmoji = config.emojis?.success || '✅';
+    const searchEmoji = config.emojis?.search || '🔍';
+    const boostEmoji = config.emojis?.boost || '🚀';
+    const lockEmoji = config.emojis?.lock || '🔒';
+
     if (!result.valid) {
         return new MessageEmbed()
             .setColor(THEME_COLORS.INVALID)
-            .setTitle('❌ ผลการตรวจสอบ Discord Token: ใช้งานไม่ได้')
+            .setTitle(`${errorEmoji} ผลการตรวจสอบ Discord Token: ใช้งานไม่ได้`)
             .setDescription([
-                `**สถานะ:** 🔴 \`${result.errorMessage || 'Invalid Token'}\``,
+                `**สถานะ:** ${errorEmoji} \`${result.errorMessage || 'Invalid Token'}\``,
                 `**Token:** \`${result.maskedToken}\``
             ].join('\n'))
-            .setFooter({ text: 'Token Checker · ตรวจสอบไม่ผ่าน' })
+            .setFooter({ text: 'Phomueangtai Personal Multi-Tool • Token Checker' })
             .setTimestamp();
     }
 
@@ -428,15 +447,15 @@ function buildSingleTokenEmbed(result) {
 
         const embed = new MessageEmbed()
             .setColor(THEME_COLORS.BOT || '#57F287')
-            .setTitle('🤖 ผลการตรวจสอบ Discord Bot Token: ใช้งานได้')
+            .setTitle(`${searchEmoji} ข้อมูลบัญชี Discord (Bot)`)
             .setDescription([
-                `**สถานะ:** 🟢 \`Token บอทถูกต้อง (Valid Bot Token)\``,
+                `**สถานะ:** ${successEmoji} \`Token บอทถูกต้อง (Valid Bot Token)\``,
                 `**ชื่อบอท:** \`${nameDisplay}\` \`[BOT]\``,
                 `**ID บอท:** \`${result.id}\``,
                 `**สร้างเมื่อ:** ${createdDisplay}`,
                 `**Token:** \`${result.maskedToken}\``
             ].join('\n'))
-            .setFooter({ text: 'Token Checker · ตรวจสอบผ่าน (Bot Token)' })
+            .setFooter({ text: 'Phomueangtai Personal Multi-Tool • Token Checker' })
             .setTimestamp();
 
         if (result.avatarUrl) {
@@ -460,7 +479,7 @@ function buildSingleTokenEmbed(result) {
         ? `${formatDateBangkok(result.createdAt)} (${getAccountAgeString(result.createdAt)})`
         : '-';
 
-    let nitroDetail = 'ไม่มี Nitro ที่ใช้งานอยู่';
+    let nitroDetail = 'ไม่มี Nitro';
     if (result.hasNitro) {
         const expireInfo = result.expireDate
             ? `หมดอายุวันที่ ${formatDateBangkok(result.expireDate)} (เหลืออีก **${result.expireDays}** วัน)`
@@ -469,60 +488,61 @@ function buildSingleTokenEmbed(result) {
     }
 
     const boostDetail = result.hasBoost
-        ? '🚀 มีสิทธิ์ Server Boost (พร้อมใช้งาน 2 บูสต์)'
-        : '❌ ไม่มีสิทธิ์ Server Boost';
+        ? `${boostEmoji} มีสิทธิ์ Server Boost (พร้อมใช้งาน 2 บูสต์)`
+        : `${errorEmoji} ไม่มีสิทธิ์ Server Boost`;
 
     const securityLines = [
-        `• ยืนยันอีเมล: ${result.emailVerified ? '✅ สำเร็จ' : '❌ ยังไม่ยืนยัน'}`,
-        `• ผูกเบอร์โทรศัพท์: ${result.phoneVerified ? '✅ สำเร็จ' : '❌ ยังไม่ผูก'}`,
-        `• ระบบ 2FA: ${result.mfaEnabled ? '🔐 เปิดใช้งานแล้ว' : '❌ ปิดอยู่'}`
+        `• ยืนยันอีเมล: ${result.emailVerified ? `${successEmoji} ยืนยันแล้ว` : `${errorEmoji} ยังไม่ยืนยัน`}`,
+        `• ผูกเบอร์โทรศัพท์: ${result.phoneVerified ? `${successEmoji} ผูกแล้ว` : `${errorEmoji} ยังไม่ผูก`}`,
+        `• ระบบ 2FA: ${result.mfaEnabled ? `${lockEmoji} เปิดใช้งานแล้ว` : `${errorEmoji} ปิดอยู่`}`
     ].join('\n');
 
     return new MessageEmbed()
         .setColor(color)
-        .setTitle('🔍 ข้อมูลบัญชี Discord Token')
+        .setTitle(`${searchEmoji} ข้อมูลบัญชี Discord`)
         .setThumbnail(result.avatarUrl)
         .addFields(
             {
-                name: '👤 ข้อมูลบัญชี',
+                name: 'ข้อมูลบัญชี',
                 value: `• **ชื่อผู้ใช้:** ${nameDisplay}\n• **ไอดีผู้ใช้:** \`${result.id}\`\n• **สร้างเมื่อ:** ${createdDisplay}`,
                 inline: false
             },
             {
-                name: '💎 สถานะ Nitro',
+                name: 'Nitro',
                 value: nitroDetail,
                 inline: false
             },
             {
-                name: '🚀 สิทธิ์การบูสต์',
+                name: 'Server Boost',
                 value: boostDetail,
                 inline: false
             },
             {
-                name: '🛡️ ความปลอดภัยของบัญชี',
+                name: 'ความปลอดภัย',
                 value: securityLines,
                 inline: false
             },
             {
-                name: '🔑 Token (Masked)',
+                name: 'Token',
                 value: `\`${result.maskedToken}\``,
                 inline: false
             }
         )
-        .setFooter({ text: 'Discord Token Checker · ปลอดภัยและแสดงเฉพาะคุณ' })
+        .setFooter({ text: 'Phomueangtai Personal Multi-Tool • Token Checker' })
         .setTimestamp();
 }
 
 function resolveBatchItemPlanTag(item) {
     if (item.isBot || item.category === 'bot') return '🤖 Bot';
-    if (item.hasBoost) return '🚀 Boost';
+    if (item.hasBoost) return `${config.emojis?.boost || '🚀'} Boost`;
     if (item.hasNitro) return '💎 Nitro';
-    return '🟢 Normal';
+    return '🟢 ปกติ';
 }
 
 function formatBatchItemLine(item, index) {
+    const errorEmoji = config.emojis?.error || '❌';
     if (!item.valid) {
-        return `${index}. 🔴 \`${item.maskedToken}\` — ${item.errorMessage || 'Invalid'}`;
+        return `${index}. ${errorEmoji} \`${item.maskedToken}\` — ${item.errorMessage || 'Invalid'}`;
     }
     const planTag = resolveBatchItemPlanTag(item);
     const expireNote = item.hasNitro ? ` · เหลือ ${item.expireDays} วัน` : '';
@@ -531,6 +551,9 @@ function formatBatchItemLine(item, index) {
 
 function buildBatchSummaryEmbed(batchData) {
     const { summary, results } = batchData;
+    const successEmoji = config.emojis?.success || '✅';
+    const boostEmoji = config.emojis?.boost || '🚀';
+    const errorEmoji = config.emojis?.error || '❌';
 
     let color = THEME_COLORS.NORMAL;
     if (summary.boost > 0) {
@@ -542,25 +565,25 @@ function buildBatchSummaryEmbed(batchData) {
     }
 
     const summaryText = [
-        `📊 **สรุปผลการตรวจสอบทั้งหมด:** \`${summary.total}\` บัญชี`,
-        `• 🚀 **มี Nitro Boost:** \`${summary.boost}\` บัญชี`,
-        `• 💎 **มี Nitro (ไม่มี Boost):** \`${summary.nitro}\` บัญชี`,
-        `• 🟢 **โทเค่นปกติ (No Nitro):** \`${summary.normal}\` บัญชี`,
-        summary.bot > 0 ? `• 🤖 **โทเค่นบอท (Bot Tokens):** \`${summary.bot}\` บัญชี` : null,
-        `• 🔴 **โทเค่นใช้งานไม่ได้ (Invalid):** \`${summary.invalid}\` บัญชี`
+        `**สรุปผลการตรวจสอบทั้งหมด:** \`${summary.total}\` Token`,
+        `• ${boostEmoji} **Nitro Boost:** \`${summary.boost}\``,
+        `• 💎 **Nitro (ไม่มี Boost):** \`${summary.nitro}\``,
+        `• **Token ปกติ:** \`${summary.normal}\``,
+        summary.bot > 0 ? `• 🤖 **Token บอท:** \`${summary.bot}\`` : null,
+        `• ${errorEmoji} **Token ใช้งานไม่ได้:** \`${summary.invalid}\``
     ].filter(Boolean).join('\n');
 
     // Show up to 15 items in embed
     const previewList = results.slice(0, 15).map((item, idx) => formatBatchItemLine(item, idx + 1));
     if (results.length > 15) {
-        previewList.push(`... และอีก ${results.length - 15} บัญชี (ดูรายละเอียดเต็มในไฟล์แนบด้านล่าง)`);
+        previewList.push(`... และอีก ${results.length - 15} Token (ดูรายละเอียดเต็มในไฟล์แนบด้านล่าง)`);
     }
 
     const embed = new MessageEmbed()
         .setColor(color)
-        .setTitle('📊 ผลการตรวจสอบ Discord Tokens แบบกลุ่ม')
-        .setDescription(`${summaryText}\n\n**📋 รายการบัญชี:**\n${previewList.join('\n')}`)
-        .setFooter({ text: 'Discord Token Checker · แยกไฟล์หมวดหมู่ส่งให้เรียบร้อยแล้ว' })
+        .setTitle(`${successEmoji} ตรวจสอบเสร็จแล้ว`)
+        .setDescription(`${summaryText}\n\n**รายการ Token:**\n${previewList.join('\n')}`)
+        .setFooter({ text: 'Phomueangtai Personal Multi-Tool • Token Checker' })
         .setTimestamp();
 
     return embed;

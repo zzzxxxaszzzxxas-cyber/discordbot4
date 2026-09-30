@@ -826,57 +826,45 @@ function buildVerificationSetupResultEmbed({
     channel,
     role,
     verifyType,
-    panelOptions,
-    panelMsgId,
-    panelRevision
+    panelOptions
 }) {
     return new MessageEmbed()
         .setColor(config.system.themeColors.success)
-        .setTitle(`${config.emojis.success} ติดตั้งแผงยืนยันสำเร็จ`)
+        .setTitle(`${config.emojis.success} ติดตั้งแผงยืนยันเรียบร้อย`)
         .setDescription(
             `แผงยืนยันถูกส่งไปที่ <#${channel.id}> แล้ว\n` +
             `ระบบบันทึกการตั้งค่าและพร้อมให้สมาชิกยืนยันตัวตน`
         )
         .addFields(
             {
-                name: "📌 ช่อง",
+                name: "ช่อง",
                 value: `<#${channel.id}>`,
                 inline: true
             },
             {
-                name: "🎭 ยศ",
+                name: "ยศ",
                 value: `<@&${role.id}>`,
                 inline: true
             },
             {
-                name: "🔒 ประเภท",
+                name: "ประเภท",
                 value: verifyType ? "OAuth2 Direct Authorize" : "กดรับยศทันที",
                 inline: true
             },
             {
-                name: "🧩 ปุ่ม",
+                name: "ปุ่ม",
                 value: `${panelOptions.buttonParts.emojiDisplay || ""} ${panelOptions.buttonParts.label}`.trim(),
                 inline: false
             },
             {
-                name: "🎨 สี",
+                name: "สี",
                 value: panelOptions.colorHex,
                 inline: true
             },
             {
-                name: "🕐 เวลา",
+                name: "เวลา",
                 value: panelOptions.showTs ? "เปิด" : "ปิด",
                 inline: true
-            },
-            {
-                name: "🆔 Message ID",
-                value: `\`${panelMsgId}\``,
-                inline: false
-            },
-            {
-                name: "🧬 Panel Revision",
-                value: `\`${panelRevision}\``,
-                inline: false
             }
         )
         .setFooter({ text: `ตั้งค่าโดย ${interaction.user.tag}` })
@@ -892,6 +880,7 @@ async function handleSetupVerify(interaction) {
     }
 
     await interaction.deferReply({ ephemeral: true });
+    await interaction.editReply({ content: `${config.emojis.loading} กำลังติดตั้งแผงยืนยันตัวตน...` }).catch(() => {});
 
     const channel = interaction.options.getChannel("channel");
     const role = interaction.options.getRole("role");
@@ -948,9 +937,7 @@ async function handleSetupVerify(interaction) {
             channel,
             role,
             verifyType,
-            panelOptions,
-            panelMsgId: panelMsg.id,
-            panelRevision
+            panelOptions
         });
 
         sendWebhookEvent({
@@ -971,7 +958,7 @@ async function handleSetupVerify(interaction) {
             sourceIconUrl: getDiscordGuildIconUrl(interaction.guild)
         }).catch(() => {});
 
-        return interaction.editReply({ embeds: [resultEmbed] });
+        return interaction.editReply({ content: null, embeds: [resultEmbed] });
     } catch (err) {
         console.error(`[VERIFY] ❌ setup-verify failed: ${err.message}`);
         return interaction.editReply({ content: verificationSetupFailureMessage(err) });
@@ -1004,8 +991,8 @@ async function executeDirectRoleAssignment(interaction, member, role, roleId) {
             embeds: [
                 new MessageEmbed()
                     .setColor(config.system.themeColors.success)
-                    .setTitle("Added Roles")
-                    .setDescription(`+ ${role.toString()} (user)`)
+                    .setTitle(`${config.emojis.success} รับยศเรียบร้อย`)
+                    .setDescription(`ยศ: ${role.toString()}`)
                     .setTimestamp()
             ],
             ephemeral: true

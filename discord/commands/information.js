@@ -902,6 +902,29 @@ async function resolveAvatarTarget(interaction) {
 async function handleUserAvatar(interaction) {
     markCommandAccepted(interaction);
     try {
+        if (typeof interaction.editReply === "function") {
+            await interaction.reply({
+                content: `${config.emojis?.loading || "⏳"} กำลังโหลด...`,
+                fetchReply: true
+            });
+            const user = await resolveAvatarTarget(interaction);
+            if (!user || typeof user.displayAvatarURL !== "function") {
+                return interaction.editReply({
+                    content: `> ${config.emojis?.error || "❌"} ไม่พบข้อมูลผู้ใช้ที่ระบุ`
+                });
+            }
+
+            const embed = buildAvatarEmbed(user);
+            const components = buildAvatarActionRow(user);
+
+            return interaction.editReply({
+                content: null,
+                embeds: [embed],
+                components,
+                allowedMentions: { parse: [] }
+            });
+        }
+
         const user = await resolveAvatarTarget(interaction);
         if (!user || typeof user.displayAvatarURL !== "function") {
             return interaction.reply({

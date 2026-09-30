@@ -226,7 +226,7 @@ test("buildEmojiResultEmbed builds complete, partial, and failed states", () => 
         guild,
         user
     });
-    assert.ok(completeEmbed.data.title.includes("เสร็จสมบูรณ์"));
+    assert.ok(completeEmbed.data.title.includes("เรียบร้อย"));
 
     // Partial state
     const partialEmbed = buildEmojiResultEmbed({
@@ -241,7 +241,7 @@ test("buildEmojiResultEmbed builds complete, partial, and failed states", () => 
         guild,
         user
     });
-    assert.ok(partialEmbed.data.title.includes("สำเร็จบางส่วน"));
+    assert.ok(partialEmbed.data.title.includes("บางส่วน"));
 
     // Failed state
     const failedEmbed = buildEmojiResultEmbed({
@@ -342,7 +342,7 @@ test("handleSteal successfully imports emojis and sends progress and result embe
     const finalEdit = edits[edits.length - 1];
     assert.ok(finalEdit.embeds);
     assert.equal(finalEdit.embeds.length, 1);
-    assert.ok(finalEdit.embeds[0].data.title.includes("เสร็จสมบูรณ์"));
+    assert.ok(finalEdit.embeds[0].data.title.includes("เรียบร้อย"));
 });
 
 test("handleSteal handles individual emoji creation failures gracefully and reports them", async () => {
@@ -363,9 +363,9 @@ test("handleSteal handles individual emoji creation failures gracefully and repo
     assert.equal(activeEmojiCopies.has(interaction.guild.id), false);
     const finalEdit = edits[edits.length - 1];
     assert.ok(finalEdit.embeds);
-    assert.ok(finalEdit.embeds[0].data.title.includes("สำเร็จบางส่วน"));
+    assert.ok(finalEdit.embeds[0].data.title.includes("บางส่วน"));
     const fields = finalEdit.embeds[0].data.fields;
-    const failedField = fields.find(f => f.name.includes("รายการที่ล้มเหลว"));
+    const failedField = fields.find(f => f.name.includes("รายการที่ไม่สำเร็จ"));
     assert.ok(failedField);
     assert.ok(failedField.value.includes("256KB"));
 });

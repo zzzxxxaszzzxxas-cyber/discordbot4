@@ -228,8 +228,9 @@ async function handleQuestButton(interaction) {
     if (customId === IDS.BTN_QUEST_STOP) {
         if (typeof interaction.deferReply === 'function') {
             await interaction.deferReply({ flags: 64 });
+            await interaction.editReply({ content: `${config.emojis?.loading || '⏳'} กำลังโหลด...` }).catch(() => null);
             const payload = await buildStopPanelPayload(interaction.user.id);
-            return interaction.editReply(payload);
+            return interaction.editReply({ content: null, ...payload });
         }
         const payload = await buildStopPanelPayload(interaction.user.id);
         return interaction.reply({ ...payload, flags: 64 });
@@ -323,6 +324,7 @@ async function handleQuestModalSubmit(interaction) {
     }
 
     await interaction.deferReply({ flags: 64 });
+    await interaction.editReply({ content: `${config.emojis?.loading || '⏳'} กำลังโหลด...` }).catch(() => null);
 
     const results = await startUserQuestSession({
         client: interaction.client,

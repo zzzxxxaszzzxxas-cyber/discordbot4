@@ -108,7 +108,7 @@ test('tokenChecker embed builders produce correct outputs', () => {
     };
     const boostEmbed = buildSingleTokenEmbed(boostResult);
     assert.equal(boostEmbed.data.color, parseInt(THEME_COLORS.BOOST.replace('#', ''), 16));
-    assert.match(boostEmbed.data.title, /ข้อมูลบัญชี Discord Token/);
+    assert.match(boostEmbed.data.title, /ข้อมูลบัญชี Discord/);
     assert.equal(boostEmbed.data.thumbnail.url, boostResult.avatarUrl);
 
     // 3. Batch summary embed
@@ -135,7 +135,7 @@ test('tokenChecker embed builders produce correct outputs', () => {
     };
     const batchEmbed = buildBatchSummaryEmbed(batchData);
     assert.equal(batchEmbed.data.color, parseInt(THEME_COLORS.BOOST.replace('#', ''), 16));
-    assert.match(batchEmbed.data.description, /สรุปผลการตรวจสอบทั้งหมด.*3.*บัญชี/);
+    assert.match(batchEmbed.data.description, /สรุปผลการตรวจสอบทั้งหมด.*3.*Token/);
     assert.match(batchEmbed.data.description, /Apichat/);
     assert.match(batchEmbed.data.description, /NormalUser/);
 
@@ -152,7 +152,7 @@ test('tokenChecker embed builders produce correct outputs', () => {
         category: 'bot'
     };
     const botEmbed = buildSingleTokenEmbed(botResult);
-    assert.match(botEmbed.data.title, /Discord Bot Token: ใช้งานได้/);
+    assert.match(botEmbed.data.title, /ข้อมูลบัญชี Discord.*Bot/);
     assert.match(botEmbed.data.description, /Valid Bot Token/);
     assert.match(botEmbed.data.description, /Broadcast Helper/);
     assert.match(botEmbed.data.description, /\[BOT\]/);
@@ -190,8 +190,8 @@ test('tokenCheck command and interactions behave correctly', async () => {
 
     // 2. buildTokenCheckPanelEmbed and Row
     const panelEmbed = buildTokenCheckPanelEmbed();
-    assert.match(panelEmbed.data.title, /Phomueangtai Discord Token Checker/);
-    assert.match(panelEmbed.data.description, /ระบบตรวจสอบสถานะ Discord Token แบบส่วนตัว/);
+    assert.match(panelEmbed.data.title, /ตรวจสอบ Discord Token/);
+    assert.match(panelEmbed.data.description, /ตรวจสอบสถานะบัญชี Nitro/);
 
     const panelEmbedWithAttachment = buildTokenCheckPanelEmbed({ hasAttachment: true });
     assert.equal(panelEmbedWithAttachment.data.image.url, 'attachment://token-check-banner.gif');
@@ -199,7 +199,7 @@ test('tokenCheck command and interactions behave correctly', async () => {
     const panelRow = buildTokenCheckPanelRow();
     assert.equal(panelRow.components.length, 1);
     assert.equal(panelRow.components[0].data.custom_id, IDS.BTN_TOKEN_CHECK);
-    assert.equal(panelRow.components[0].data.label, 'เช็คโทเคน');
+    assert.equal(panelRow.components[0].data.label, 'ตรวจสอบ Token');
 
     // 3. handleTokenCheckCommand replies publicly with deferral and checks owner permission
     let repliedPayload = null;
@@ -284,7 +284,7 @@ test('tokenCheck command and interactions behave correctly', async () => {
         replied: false
     };
     await handleTokenCheckModal(mockOverflowModalInteraction);
-    assert.match(overflowReplyContent.content, /สูงสุดครั้งละ \*\*20 บัญชี\*\*/);
+    assert.match(overflowReplyContent.content, /สูงสุดครั้งละ \*\*20 Token\*\*/);
 });
 
 test('checkSingleToken utilizes tokenCoordinator profile cache and quarantine', async () => {

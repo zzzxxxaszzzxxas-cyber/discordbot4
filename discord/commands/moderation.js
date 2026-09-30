@@ -38,7 +38,7 @@ async function handle(interaction, client) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  🧹  CLEAR
+//  CLEAR
 // ════════════════════════════════════════════════════════════════════════════
 function isBulkDeletableMessage(message, now = Date.now()) {
     const createdAt = Number(message?.createdTimestamp || 0);
@@ -164,58 +164,34 @@ async function deleteChannelMessages(channel, amount, now = Date.now(), options 
 function buildClearLoadingEmbed(interaction, amt) {
     return new MessageEmbed()
         .setColor(config.system.themeColors.info || "#5865F2")
-        .setAuthor({
-            name: "กำลังทำความสะอาดห้องแชท...",
-            iconURL: interaction.guild?.iconURL() || undefined
-        })
-        .setDescription(
-            `> ${config.emojis.broom || "🧹"} กำลังสแกนและลบข้อความเป้าหมาย **${amt.toLocaleString()}** ข้อความ...\n` +
-            `> ${config.emojis.loading || "⏳"} กรุณารอสักครู่ ระบบกำลังเร่งดำเนินการด้วยความเร็วสูงสุด ⚡`
-        )
-        .setFooter({
-            text: `ผู้สั่งการ: ${interaction.user.tag}`,
-            iconURL: interaction.user.displayAvatarURL?.() || undefined
-        });
+        .setDescription(`> ${config.emojis.loading} กำลังลบ ${amt.toLocaleString()} ข้อความ...`);
 }
 
 function buildClearResultEmbed(interaction, result) {
     if (result.deleted === 0) {
         return new MessageEmbed()
             .setColor(config.system.themeColors.warning || "#FEE75C")
-            .setAuthor({
-                name: "ผลการทำความสะอาดห้องแชท",
-                iconURL: interaction.guild?.iconURL() || undefined
-            })
+            .setTitle(`${config.emojis.warning} ลบข้อความไม่สำเร็จ`)
             .setDescription(
                 result.fetched === 0
-                    ? `> ${config.emojis.warning} ไม่พบข้อความให้ลบในช่องนี้`
-                    : `> ${config.emojis.warning} ลบไม่สำเร็จ **${result.failed}** ข้อความ`
+                    ? `> ไม่พบข้อความให้ลบในช่องนี้`
+                    : `> ไม่สามารถลบข้อความในช่องนี้ได้ (${result.failed.toLocaleString()} ข้อความ)`
             );
     }
 
     const embed = new MessageEmbed()
         .setColor(config.system.themeColors.success || "#57F287")
-        .setAuthor({
-            name: "กวาดล้างห้องแชทเรียบร้อย",
-            iconURL: interaction.guild?.iconURL() || undefined
-        })
-        .setDescription(
-            `> ${config.emojis.success} **ลบข้อความสำเร็จทั้งหมด \`${result.deleted.toLocaleString()}\` ข้อความ!**`
-        )
-        .addFields([
-            { name: "⚡ ลบความเร็วสูง (Bulk)", value: `\`${result.bulkDeleted.toLocaleString()}\` ข้อความ`, inline: true },
-            { name: "⏳ ลบรายข้อความ/เก่า", value: `\`${result.individualDeleted.toLocaleString()}\` ข้อความ`, inline: true },
-            { name: "📌 ช่องแชท", value: `<#${interaction.channel.id}>`, inline: true }
-        ]);
+        .setTitle(`${config.emojis.success} ลบข้อความเรียบร้อย`)
+        .setDescription(`> ลบข้อความใน <#${interaction.channel.id}> ไป **${result.deleted.toLocaleString()}** ข้อความ`);
 
     if (result.failed > 0) {
         embed.addFields([
-            { name: "⚠️ ล้มเหลว", value: `\`${result.failed.toLocaleString()}\` ข้อความ`, inline: true }
+            { name: `${config.emojis.warning} ลบไม่ได้`, value: `\`${result.failed.toLocaleString()}\` ข้อความ`, inline: true }
         ]);
     }
 
     embed.setFooter({
-        text: `ผู้ดำเนินการ: ${interaction.user.tag}`,
+        text: `ผู้สั่ง: ${interaction.user.tag}`,
         iconURL: interaction.user.displayAvatarURL?.() || undefined
     });
     embed.setTimestamp();
@@ -223,15 +199,16 @@ function buildClearResultEmbed(interaction, result) {
 }
 
 function buildClearErrorEmbed(e) {
-    let errorMsg = `> ${config.emojis.error} ลบข้อความไม่สำเร็จ กรุณาลองใหม่`;
+    let errorMsg = "กรุณาลองใหม่อีกครั้ง";
     if (e.code === 50013) {
-        errorMsg = `> ${config.emojis.error} บอทไม่มีสิทธิ์ลบข้อความในช่องนี้`;
+        errorMsg = "บอทไม่มีสิทธิ์ลบข้อความในช่องนี้";
     } else if (e.code === 10003 || e.code === 50001) {
-        errorMsg = `> ${config.emojis.error} บอทไม่สามารถเข้าถึงช่องหรือประวัติข้อความได้`;
+        errorMsg = "บอทไม่สามารถเข้าถึงช่องหรือประวัติข้อความได้";
     }
     return new MessageEmbed()
         .setColor(config.system.themeColors.error || "#ED4245")
-        .setDescription(errorMsg);
+        .setTitle(`${config.emojis.error} ลบข้อความไม่สำเร็จ`)
+        .setDescription(`> ${errorMsg}`);
 }
 
 async function handleClear(interaction) {

@@ -195,7 +195,7 @@ function successReply(interaction, input, result) {
     );
     return interaction.editReply({
         content: result.caseCompleted
-            ? undefined
+            ? null
             : `> ${config.emojis.warning} ดำเนินการกับสมาชิกแล้ว แต่ฐานข้อมูลยังคง Case #${result.caseDoc.caseNumber} เป็น pending เพื่อให้ตรวจสอบภายหลัง`,
         embeds: [replyEmbed]
     });
@@ -223,6 +223,17 @@ function failureReply(interaction, err) {
     return interaction.editReply({ content: moderationErrorReply(err) });
 }
 
+function resolveModerationLoadingText(input) {
+    if (input.action === "ban") return `${config.emojis.loading} กำลังแบนสมาชิก...`;
+    if (input.action === "kick") return `${config.emojis.loading} กำลังเตะสมาชิก...`;
+    if (input.action === "timeout") {
+        return input.duration?.isUntimeout || input.duration?.minutes === 0
+            ? `${config.emojis.loading} กำลังปลด Timeout...`
+            : `${config.emojis.loading} กำลังตั้ง Timeout...`;
+    }
+    return `${config.emojis.loading} กำลังดำเนินการ...`;
+}
+
 function readFullModerationInput(interaction) {
     const baseInput = readModerationInput(interaction);
     return { ...baseInput, duration: parseTimeoutDuration(interaction, baseInput.action) };
@@ -236,6 +247,10 @@ async function handleModerationCommand(interaction, client) {
 
     markCommandAccepted(interaction);
     if (!await safeDefer(interaction)) return null;
+    const loadingText = resolveModerationLoadingText(input);
+    if (loadingText) {
+        await interaction.editReply({ content: loadingText }).catch(() => {});
+    }
     try {
         const result = await performModeration(interaction, input);
         sendWebhookEvent({

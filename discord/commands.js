@@ -250,11 +250,15 @@ async function handleVoiceOnlineCommand(interaction) {
         markCommandAccepted(interaction);
         const previousPanel = panelMessages.get(guildId) || null;
         const message = await interaction.reply({
-            embeds: [buildControlPanelEmbed()],
-            components: [buildControlPanelRow()],
+            content: `${config.emojis.loading || "⏳"} กำลังโหลด...`,
             fetchReply: true
         });
         panelMessages.set(guildId, message);
+        await message.edit({
+            content: null,
+            embeds: [buildControlPanelEmbed()],
+            components: [buildControlPanelRow()]
+        });
         if (!await updatePanel(guildId)) {
             return reportPanelPersistenceFailure(interaction, message, previousPanel);
         }

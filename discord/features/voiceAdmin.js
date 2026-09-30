@@ -584,23 +584,19 @@ function buildPanel(channel, status = null) {
         if (inChannel.has(id) && lock.deafLocked) deaf++;
     }
     const descriptionLines = [
-        `### 🎛️ แผงควบคุมและจัดการห้องเสียง`,
-        `> ศูนย์ควบคุมสถานะสมาชิกในห้องเสียงแบบเรียลไทม์\n`,
-        `📍 **ข้อมูลห้องเสียงปัจจุบัน**`,
         `• ห้อง: <#${channel.id}>`,
-        `• สมาชิกทั้งหมด: **${members.length}** คน  │  จัดการได้: **${sourceMembers(channel).length}** คน\n`,
-        `🔒 **สถานะการล็อกระดับเซิร์ฟเวอร์**`,
-        `• 🔇 ล็อกไมค์ (Server Mute): **${mute}** คน`,
-        `• 🎧 ล็อกหู (Server Deafen): **${deaf}** คน`
+        `• สมาชิกในห้อง: **${members.length}** คน (จัดการได้ **${sourceMembers(channel).length}** คน)\n`,
+        `**สถานะการล็อก**`,
+        `• ล็อกไมค์: **${mute}** คน`,
+        `• ล็อกหู: **${deaf}** คน`
     ];
     if (status) {
         descriptionLines.push(`\n${status}`);
     }
     const embed = new EmbedBuilder()
         .setColor(config.system?.themeColors?.primary || "#5865F2")
-        .setTitle("🔊 Voice Administration Panel")
+        .setTitle(`${config.emojis.voice_ch || "🔊"} จัดการห้องเสียง`)
         .setDescription(descriptionLines.join("\n"))
-        .setFooter({ text: "Phomueangtai Personal Multi-Tool • Voice Admin" })
         .setTimestamp();
     const iconUrl = channel?.guild?.iconURL?.({ forceStatic: false, size: 256 }) || channel?.guild?.iconURL?.();
     if (iconUrl) embed.setThumbnail(iconUrl);
@@ -611,8 +607,8 @@ function buildPanel(channel, status = null) {
         new ButtonBuilder().setCustomId(IDS.UNLOCK_MUTE).setLabel("เปิดไมค์").setEmoji("🎙️").setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(IDS.UNLOCK_DEAF).setLabel("เปิดหู").setEmoji("🔊").setStyle(ButtonStyle.Success)
     );
-    const move = new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(IDS.MOVE).setPlaceholder("🚀 เลือกห้องเสียงปลายทางเพื่อย้ายสมาชิกทันที").setChannelTypes(ChannelType.GuildVoice).setMinValues(1).setMaxValues(1));
-    const refresh = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(IDS.REFRESH).setLabel("รีเฟรชสถานะ").setEmoji("🔄").setStyle(ButtonStyle.Primary));
+    const move = new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(IDS.MOVE).setPlaceholder("เลือกห้องเสียงปลายทางเพื่อย้ายสมาชิก").setChannelTypes(ChannelType.GuildVoice).setMinValues(1).setMaxValues(1));
+    const refresh = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(IDS.REFRESH).setLabel("รีเฟรช").setEmoji("🔄").setStyle(ButtonStyle.Primary));
     return { embeds: [embed], components: [actions, move, refresh] };
 }
 function verifyVoiceAdminAccess(actor, channel) {
@@ -751,7 +747,7 @@ async function handleVoiceAdminCommand(interaction) {
 function isVoiceAdminInteraction(interaction) { return (interaction?.isButton?.() || interaction?.isChannelSelectMenu?.()) && String(interaction.customId || "").startsWith(IDS.PREFIX); }
 async function handleVoiceAdminInteraction(interaction) {
     const access = verifyVoiceAdminAccess(interaction.member, interaction.channel);
-    if (access) return interaction.reply({ content: `> ⛔ ${access}`, ephemeral: true });
+    if (access) return interaction.reply({ content: `> ${config.emojis.error || "⛔"} ${access}`, ephemeral: true });
     if (interaction.customId === IDS.REFRESH) return interaction.update(buildPanel(interaction.channel));
     await interaction.deferUpdate();
     const action = ({ [IDS.DISCONNECT]: "disconnect", [IDS.LOCK_MUTE]: "mute", [IDS.LOCK_DEAF]: "deaf", [IDS.UNLOCK_MUTE]: "unmute", [IDS.UNLOCK_DEAF]: "undeaf", [IDS.MOVE]: "move" })[interaction.customId];
@@ -763,14 +759,25 @@ async function handleVoiceAdminInteraction(interaction) {
             destination = await interaction.guild.channels.fetch(destinationId).catch(() => null);
         }
     }
-    if (!action) return interaction.editReply(buildPanel(interaction.channel, `> ❌ คำสั่งแผงนี้ไม่ถูกต้อง`));
+    if (!action) return interaction.editReply(buildPanel(interaction.channel, `> ${config.emojis.error} คำสั่งแผงนี้ไม่ถูกต้อง`));
+
+    const actionLoadingText = ({
+        disconnect: `${config.emojis.loading} กำลังตัดสายทั้งหมด...`,
+        mute: `${config.emojis.loading} กำลังปิดไมค์...`,
+        deaf: `${config.emojis.loading} กำลังปิดหู...`,
+        unmute: `${config.emojis.loading} กำลังเปิดไมค์...`,
+        undeaf: `${config.emojis.loading} กำลังเปิดหู...`,
+        move: `${config.emojis.loading} กำลังย้ายสมาชิก...`
+    })[action] || `${config.emojis.loading} กำลังดำเนินการ...`;
+    await interaction.editReply(buildPanel(interaction.channel, `> ${actionLoadingText}`)).catch(() => {});
+
     try {
         const result = await runPanelAction(interaction, action, destination);
         return interaction.editReply(buildPanel(interaction.channel, `> ${resultEmoji(result)} ${buildResult("ผลการทำงาน", result)}`));
     }
     catch (error) {
         const detail = describePanelActionFailure(error);
-        return interaction.editReply(buildPanel(interaction.channel, `> ❌ ${detail}`));
+        return interaction.editReply(buildPanel(interaction.channel, `> ${config.emojis.error} ${detail}`));
     }
 }
 
@@ -841,11 +848,16 @@ function resultColor(result) {
 function buildSecretResultEmbed(command, result, guild = null) {
     const isFullSuccess = isResultFullSuccess(result);
     const color = resultColor(result);
-    let statusText = "❌ ดำเนินการล้มเหลว";
+    const successEmoji = config.emojis?.success || "✅";
+    const errorEmoji = config.emojis?.error || "❌";
+    const warningEmoji = config.emojis?.warning || "⚠️";
+    const loadingEmoji = config.emojis?.loading || "⏳";
+
+    let statusText = `${errorEmoji} ดำเนินการไม่สำเร็จ`;
     if (isFullSuccess) {
-        statusText = "✅ ดำเนินการเสร็จสมบูรณ์";
+        statusText = `${successEmoji} ดำเนินการเสร็จสมบูรณ์`;
     } else if (result.succeeded > 0) {
-        statusText = "⚠️ ดำเนินการสำเร็จบางส่วน";
+        statusText = `${warningEmoji} ดำเนินการสำเร็จบางส่วน`;
     }
 
     const durationText = Number.isFinite(result.durationMs) && result.durationMs > 0
@@ -854,22 +866,22 @@ function buildSecretResultEmbed(command, result, guild = null) {
 
     const lines = [
         `### ${statusText}`,
-        `> คำสั่งลับด่วนสำหรับผู้ดูแลระบบห้องเสียง • คำสั่ง: **${command}**\n`,
-        "📊 **สรุปผลการดำเนินการ (Execution Summary):**",
-        `• 👥 **เป้าหมายทั้งหมด:** **${result.targeted}** คน`,
-        `• ✅ **ดำเนินการสำเร็จ:** **${result.succeeded}** คน`
+        `> คำสั่งลับสำหรับผู้ดูแลระบบห้องเสียง • คำสั่ง: **${command}**\n`,
+        "**สรุปผลการดำเนินการ:**",
+        `• เป้าหมายทั้งหมด: **${result.targeted}** คน`,
+        `• ${successEmoji} ดำเนินการสำเร็จ: **${result.succeeded}** คน`
     ];
-    if (result.failed > 0) lines.push(`• ❌ **ล้มเหลว:** **${result.failed}** คน`);
-    if (result.skipped > 0) lines.push(`• 🏃 **ออกจากห้องก่อนถึงคิว:** **${result.skipped}** คน`);
-    if (result.timedOut > 0) lines.push(`• ⏳ **หมดเวลาการทำงาน:** **${result.timedOut}** คน`);
+    if (result.failed > 0) lines.push(`• ${errorEmoji} ไม่สำเร็จ: **${result.failed}** คน`);
+    if (result.skipped > 0) lines.push(`• ออกจากห้องก่อนถึงคิว: **${result.skipped}** คน`);
+    if (result.timedOut > 0) lines.push(`• ${loadingEmoji} หมดเวลา: **${result.timedOut}** คน`);
     if (result.persistenceFailed > 0) lines.push(`• ⚠️ **บันทึกสถานะไม่สำเร็จ:** **${result.persistenceFailed}** คน`);
-    lines.push(`• ⏱️ **เวลาที่ใช้:** **${durationText}**`);
+    lines.push(`• เวลาที่ใช้: **${durationText}**`);
 
     const embed = new EmbedBuilder()
         .setColor(color)
-        .setTitle(`⚡ Voice Admin — ${command}`)
+        .setTitle(`Voice Admin — ${command}`)
         .setDescription(lines.join("\n"))
-        .setFooter({ text: "Phomueangtai Personal Multi-Tool • Voice Admin Fast-Action" })
+        .setFooter({ text: "Phomueangtai Personal Multi-Tool • Voice Admin" })
         .setTimestamp();
     const iconUrl = guild?.iconURL?.({ forceStatic: false, size: 256 }) || guild?.iconURL?.();
     if (iconUrl) embed.setThumbnail(iconUrl);
@@ -877,13 +889,15 @@ function buildSecretResultEmbed(command, result, guild = null) {
 }
 
 function buildSecretErrorEmbed(detail, guild = null) {
+    const errorEmoji = config.emojis?.error || "❌";
+    const warningEmoji = config.emojis?.warning || "⚠️";
     const embed = new EmbedBuilder()
         .setColor(config.system?.themeColors?.error || "#ED4245")
-        .setTitle("❌ ดำเนินการไม่สำเร็จ")
+        .setTitle(`${errorEmoji} ดำเนินการไม่สำเร็จ`)
         .setDescription(
-            `### ⚠️ พบข้อผิดพลาดในการประมวลผล\n` +
+            `### ${warningEmoji} พบข้อผิดพลาดในการประมวลผล\n` +
             `> ระบบไม่สามารถดำเนินการตามคำสั่งลับได้ในขณะนี้\n\n` +
-            `📍 **รายละเอียดข้อผิดพลาด:**\n` +
+            `**รายละเอียดข้อผิดพลาด:**\n` +
             `• ${detail}`
         )
         .setFooter({ text: "Phomueangtai Personal Multi-Tool • Voice Admin Error" })

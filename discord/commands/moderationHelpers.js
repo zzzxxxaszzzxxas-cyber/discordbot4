@@ -152,27 +152,27 @@ function resolveModerationMeta(action, extra = {}) {
     if (action === "ban") {
         return {
             color: config.system.themeColors.error || "#ED4245",
-            title: "🔨 แบนสมาชิกเรียบร้อย",
+            title: `${config.emojis.success} แบนสมาชิกเรียบร้อย`,
             label: "BAN"
         };
     }
     if (action === "kick") {
         return {
             color: config.system.themeColors.warning || "#FEE75C",
-            title: "👢 เตะสมาชิกเรียบร้อย",
+            title: `${config.emojis.success} เตะสมาชิกเรียบร้อย`,
             label: "KICK"
         };
     }
     if (isUntimeout) {
         return {
             color: config.system.themeColors.success || "#57F287",
-            title: "🕊️ ปลดระงับการใช้งาน (Untimeout) เรียบร้อย",
+            title: `${config.emojis.success} ปลด Timeout เรียบร้อย`,
             label: "UNTIMEOUT"
         };
     }
     return {
         color: config.system.themeColors.primary || "#5865F2",
-        title: "⏳ ระงับการใช้งานสมาชิกชั่วคราว (Timeout) เรียบร้อย",
+        title: `${config.emojis.success} ตั้ง Timeout เรียบร้อย`,
         label: "TIMEOUT"
     };
 }
@@ -180,15 +180,16 @@ function resolveModerationMeta(action, extra = {}) {
 function buildModerationActionDetailLines(action, extra = {}) {
     const lines = [];
     if (action === "timeout") {
+        const isUntimeout = Boolean(extra.isUntimeout || extra.duration?.isUntimeout);
         const durFormatted = extra.duration?.formatted || (extra.duration?.minutes ? `${extra.duration.minutes} นาที` : null);
-        if (durFormatted) {
-            lines.push(`> ⏱️ **ระยะเวลา:** ${durFormatted}`);
+        if (durFormatted && !isUntimeout) {
+            lines.push(`> **ระยะเวลา:** ${durFormatted}`);
         }
         if (extra.duration?.clamped) {
-            lines.push(`> ⚠️ *ปรับลดเวลาลงมาที่ขีดจำกัดสูงสุดของ Discord (28 วัน) โดยอัตโนมัติ*`);
+            lines.push(`> ${config.emojis.warning} *ระยะเวลาถูกปรับเป็นสูงสุด 28 วันตามข้อจำกัดของ Discord*`);
         }
-    } else if (action === "ban" && extra.deleteMessageSeconds !== undefined) {
-        lines.push(`> 🗑️ **ลบข้อความ:** ${formatDeleteSeconds(extra.deleteMessageSeconds)}`);
+    } else if (action === "ban" && extra.deleteMessageSeconds !== undefined && extra.deleteMessageSeconds > 0) {
+        lines.push(`> **ลบข้อความ:** ${formatDeleteSeconds(extra.deleteMessageSeconds)}`);
     }
     return lines;
 }
@@ -198,13 +199,11 @@ function buildModerationReplyEmbed(interaction, target, action, reason, caseNumb
     const targetTag = target.user?.tag ? ` (\`${target.user.tag}\`)` : "";
     const detailLines = buildModerationActionDetailLines(action, extra);
     const lines = [
-        `> ${config.emojis.success || "✅"} **ดำเนินการสำเร็จ!**`,
-        `> ${config.emojis.mod_icon || "📋"} **Case:** #${caseNumber}`,
-        `> ${config.emojis.user || "👤"} **เป้าหมาย:** <@${target.id}>${targetTag}`,
-        `> ${config.emojis.hammer || "⚖️"} **การดำเนินการ:** **${meta.label}**`,
+        `> **สมาชิก:** <@${target.id}>${targetTag}`,
         ...detailLines,
-        `> 👮 **ผู้ลงโทษ:** <@${interaction.user.id}>`,
-        `> ${config.emojis.note || "📝"} **เหตุผล:** ${reason}`
+        `> **โดย:** <@${interaction.user.id}>`,
+        `> **เหตุผล:** ${reason}`,
+        `> **Case:** #${caseNumber}`
     ];
 
     const embed = new MessageEmbed()
@@ -221,7 +220,7 @@ function buildModerationReplyEmbed(interaction, target, action, reason, caseNumb
     }
 
     embed.setFooter({
-        text: `เซิร์ฟเวอร์: ${interaction.guild?.name || "-"} • ผู้สั่งการ: ${interaction.user.tag}`,
+        text: `เซิร์ฟเวอร์: ${interaction.guild?.name || "-"} • ผู้สั่ง: ${interaction.user.tag}`,
         iconURL: interaction.user?.displayAvatarURL?.() || undefined
     });
     embed.setTimestamp();

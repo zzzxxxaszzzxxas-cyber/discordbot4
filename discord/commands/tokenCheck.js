@@ -38,23 +38,14 @@ function getTokenCheckBannerPath() {
 function buildTokenCheckPanelEmbed({ hasAttachment = false } = {}) {
     const primaryColor = config.system?.themeColors?.info || '#5865F2';
     const searchEmoji = config.emojis?.search || '🔍';
-    const boostEmoji = config.emojis?.boost || '🚀';
-    const lockEmoji = config.emojis?.lock || '🔒';
 
     const embed = new MessageEmbed()
         .setColor(primaryColor)
-        .setTitle(`${searchEmoji} : Phomueangtai Discord Token Checker`)
+        .setTitle(`${searchEmoji} ตรวจสอบ Discord Token`)
         .setDescription(
-            `ระบบตรวจสอบสถานะ Discord Token แบบส่วนตัว ${lockEmoji}\n\n` +
-            `**ความสามารถในการตรวจสอบ:**\n` +
-            `• ตรวจสอบความถูกต้องและสถานะของบัญชี (Valid / Locked / Invalid)\n` +
-            `• ตรวจสอบสถานะ **Nitro** ทุกประเภท (Nitro Boost ${boostEmoji}, Nitro Classic, Nitro Basic)\n` +
-            `• คำนวณวันและเวลาหมดอายุของ Nitro อัตโนมัติ (เวลาประเทศไทย)\n` +
-            `• ตรวจสอบสิทธิ์ **Server Boost** ที่พร้อมใช้งาน\n` +
-            `• ตรวจสอบความปลอดภัยของบัญชี (การผูกอีเมล, เบอร์โทรศัพท์, ระบบ 2FA)\n` +
-            `• คำนวณวันสร้างบัญชีและอายุของบัญชีจาก Discord Snowflake\n` +
-            `• รองรับการกรอก **1 โทเค่น** หรือ **หลายโทเค่นพร้อมกัน** (สูงสุด ${MAX_BATCH_TOKENS} บัญชี)\n\n` +
-            `> *ข้อมูลทั้งหมดจะถูกส่งกลับแบบส่วนตัว (Ephemeral) เห็นเฉพาะคุณเท่านั้น ปลอดภัย 100%*`
+            `ตรวจสอบสถานะบัญชี Nitro, Boost และข้อมูลบัญชี\n\n` +
+            `รองรับการตรวจสอบหลาย Token พร้อมกัน (สูงสุด ${MAX_BATCH_TOKENS} Token)\n\n` +
+            `> *ผลลัพธ์จะแสดงเป็นข้อความส่วนตัวเฉพาะคุณเท่านั้น*`
         )
         .setFooter({ text: 'กดปุ่มด้านล่างเพื่อเปิดแบบฟอร์มกรอก Token' })
         .setTimestamp();
@@ -71,11 +62,12 @@ function buildTokenCheckPanelEmbed({ hasAttachment = false } = {}) {
 }
 
 function buildTokenCheckPanelRow() {
+    const searchEmoji = config.emojis?.search || '🔍';
     return new MessageActionRow().addComponents(
         new MessageButton()
             .setCustomId(IDS.BTN_TOKEN_CHECK)
-            .setLabel('เช็คโทเคน')
-            .setEmoji('🔍')
+            .setLabel('ตรวจสอบ Token')
+            .setEmoji(searchEmoji)
             .setStyle('PRIMARY')
     );
 }
@@ -85,7 +77,7 @@ async function handleTokenCheckCommand(interaction) {
 
     if (!isBotOwner(interaction.user?.id)) {
         return safeReply(interaction, {
-            content: '🔒 คำสั่งเปิดแผงควบคุม `/token-check` สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น',
+            content: `${config.emojis?.error || '🔒'} คำสั่งเปิดแผงควบคุม \`/token-check\` สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
             flags: 64
         });
     }
@@ -116,9 +108,9 @@ async function handleTokenCheckButton(interaction) {
 
     const tokenInput = new TextInputComponent()
         .setCustomId(IDS.FIELD_TOKEN_INPUT)
-        .setLabel('กรอก Discord Token (1 บรรทัดต่อ 1 บัญชี)')
+        .setLabel('Discord Token')
         .setStyle('PARAGRAPH')
-        .setPlaceholder(`วาง Discord Token ที่นี่ (รองรับสูงสุด ${MAX_BATCH_TOKENS} บัญชี โดยขึ้นบรรทัดใหม่)`)
+        .setPlaceholder('ใส่ 1 Token ต่อ 1 บรรทัด')
         .setRequired(true);
 
     const row = new MessageActionRow().addComponents(tokenInput);
@@ -133,32 +125,48 @@ async function handleTokenCheckModal(interaction) {
 
     if (tokens.length === 0) {
         return safeReply(interaction, {
-            content: '❌ ไม่พบข้อมูล Token กรุณากรอกอย่างน้อย 1 Token ในแบบฟอร์ม',
+            content: `${config.emojis?.error || '❌'} ไม่พบข้อมูล Token กรุณากรอกอย่างน้อย 1 Token ในแบบฟอร์ม`,
             flags: 64
         });
     }
 
     if (tokens.length > MAX_BATCH_TOKENS) {
         return safeReply(interaction, {
-            content: `❌ รองรับการตรวจสอบสูงสุดครั้งละ **${MAX_BATCH_TOKENS} บัญชี** กรุณาลดจำนวนแล้วลองใหม่อีกครั้ง`,
+            content: `${config.emojis?.error || '❌'} รองรับการตรวจสอบสูงสุดครั้งละ **${MAX_BATCH_TOKENS} Token** กรุณาลดจำนวนแล้วลองใหม่อีกครั้ง`,
             flags: 64
         });
     }
 
     await interaction.deferReply({ flags: 64 });
+    const loadingEmoji = config.emojis?.loading || '⏳';
 
     try {
         if (tokens.length === 1) {
+            await interaction.editReply({
+                content: `${loadingEmoji} กำลังตรวจสอบ...`
+            }).catch(() => null);
+
             const result = await checkSingleToken(tokens[0]);
             const embed = buildSingleTokenEmbed(result);
-            return await interaction.editReply({ embeds: [embed] });
+            return await interaction.editReply({ content: null, embeds: [embed] });
         }
 
-        const batchData = await checkBatchTokens(tokens, 1200);
+        await interaction.editReply({
+            content: `${loadingEmoji} กำลังตรวจสอบ...`
+        }).catch(() => null);
+
+        const batchData = await checkBatchTokens(tokens, {
+            delayMs: 150,
+            onProgress: async (current, total) => {
+                await interaction.editReply({
+                    content: `${loadingEmoji} กำลังตรวจสอบ ${current}/${total}...`
+                }).catch(() => null);
+            }
+        });
         const embed = buildBatchSummaryEmbed(batchData);
         const attachments = createCategoryAttachments(batchData.groups);
 
-        const replyPayload = { embeds: [embed] };
+        const replyPayload = { content: null, embeds: [embed] };
         if (attachments.length > 0) {
             replyPayload.files = attachments;
         }
@@ -166,7 +174,7 @@ async function handleTokenCheckModal(interaction) {
         return await interaction.editReply(replyPayload);
     } catch (error) {
         return await interaction.editReply({
-            content: `❌ เกิดข้อผิดพลาดระหว่างการตรวจสอบ: ${error.message || 'Unknown Error'}`
+            content: `${config.emojis?.error || '❌'} เกิดข้อผิดพลาดระหว่างการตรวจสอบ: ${error.message || 'Unknown Error'}`
         });
     }
 }

@@ -206,7 +206,7 @@ test("preview performs no role mutation and confirmation removes the planned rol
     const statsField = previewEmbed.fields?.find(f => f.name.includes("สถิติ"));
     assert.ok(statsField);
     assert.match(statsField.value, /ยศทั้งหมด \(ไม่รวม @everyone\): \*\*5\*\*/);
-    assert.match(statsField.value, /ยศที่สมาชิกถือรวมแบบนับซ้ำ: \*\*7\*\*/);
+    assert.match(statsField.value, /ยศที่สมาชิกถือรวม: \*\*7\*\*/);
     const exemptField = previewEmbed.fields?.find(f => f.name.includes("คุ้มครอง"));
     assert.ok(exemptField?.value?.includes(`<@&${fixture.exempt.id}>`));
     assert.ok(responses[0].components?.[0]);
@@ -214,7 +214,7 @@ test("preview performs no role mutation and confirmation removes the planned rol
     const message = confirmationMessage(fixture.guild);
     assert.equal(await roleSweep._test.handleConfirmation(message), true);
     assert.deepEqual(fixture.target.calls, [[fixture.regular.id]]);
-    assert.match(message.replies.at(-1).content, /กวาดยศเสร็จแล้ว/);
+    assert.match(message.replies.at(-1).content, /ถอดยศเสร็จแล้ว/);
     assert.ok(message.replies.at(-1).content.includes(`<@&${fixture.exempt.id}>`));
     assert.ok(message.replies.at(-1).embeds?.[0]);
 });
@@ -477,7 +477,7 @@ test("a changed member count during the confirmation fetch does not abort a vali
     assert.equal(await roleSweep._test.handleConfirmation(message), true);
     assert.equal(fixture.target.calls.length, 1);
     assert.equal(roleSweep._test.activeByGuild.has(GUILD_ID), false);
-    assert.match(message.replies.at(-1).content, /กวาดยศเสร็จแล้ว/);
+    assert.match(message.replies.at(-1).content, /ถอดยศเสร็จแล้ว/);
 });
 
 test("a rejected confirmation fetch aborts without removal and releases the active lock when no cache exists", async () => {
@@ -517,7 +517,7 @@ test("confirmation fetch failure seamlessly falls back to cached preview members
     assert.equal(await roleSweep._test.handleConfirmation(message), true);
     // Verified: sweep was NOT aborted, it seamlessly used cached preview members!
     assert.deepEqual(fixture.target.calls, [[fixture.regular.id]]);
-    assert.match(message.replies.at(-1).content, /กวาดยศเสร็จแล้ว/);
+    assert.match(message.replies.at(-1).content, /ถอดยศเสร็จแล้ว/);
 });
 
 test("chat shortcut is handled before the legacy Voice // command router", async () => {
@@ -664,7 +664,7 @@ test("slash command is owner-only and accepts the selected exception roles", asy
     assert.deepEqual(calls[0], ["deferReply", { ephemeral: true }]);
     const statsField = calls.at(-1)[1].embeds?.[0]?.data?.fields?.find(f => f.name.includes("สถิติ"));
     assert.ok(statsField);
-    assert.match(statsField.value, /ยศที่สมาชิกถือรวมแบบนับซ้ำ/);
+    assert.match(statsField.value, /ยศที่สมาชิกถือรวม/);
     assert.equal(roleSweep._test.pendingByGuild.get(GUILD_ID).exceptRoleIds[0], fixture.exempt.id);
 
     const denied = { ...interaction, user: { id: TARGET_ID }, deferred: false, replied: false };
@@ -977,7 +977,7 @@ test("button confirm executes sweep, disables components, and edits reply with r
 
     // Initial update set loading message and removed components
     assert.equal(updates.length, 1);
-    assert.match(updates[0].content, /กำลังเริ่มกวาดยศ/);
+    assert.match(updates[0].content, /กำลังถอดยศ/);
     assert.deepEqual(updates[0].components, []);
 
     // Roles removed
@@ -985,7 +985,7 @@ test("button confirm executes sweep, disables components, and edits reply with r
 
     // Summary delivered via editReply
     assert.equal(edits.length, 1);
-    assert.match(edits[0].content, /กวาดยศเสร็จแล้ว/);
+    assert.match(edits[0].content, /ถอดยศเสร็จแล้ว/);
     assert.ok(edits[0].content.includes(`<@&${fixture.exempt.id}>`));
     assert.ok(edits[0].embeds?.[0]);
     assert.equal(edits[0].embeds[0].data.thumbnail?.url, "https://cdn.discordapp.com/icons/guild/icon.png");
@@ -1016,7 +1016,7 @@ test("button cancel cancels the pending sweep without modifying roles", async ()
     assert.equal(roleSweep.isRoleSweepButton(interaction.customId), true);
     assert.ok(await roleSweep.handleRoleSweepButton(interaction));
     assert.equal(updates.length, 1);
-    assert.match(updates[0].content, /ยกเลิกการกวาดยศแล้ว/);
+    assert.match(updates[0].content, /ยกเลิกการถอดยศแล้ว/);
     assert.equal(roleSweep._test.pendingByGuild.has(GUILD_ID), false);
     assert.equal(fixture.target.calls.length, 0);
 });
@@ -1100,7 +1100,7 @@ test("routeButtonInteraction in commands.js routes role sweep buttons", async ()
 
     await commands.handleInteraction(interaction);
     assert.equal(updates.length, 1);
-    assert.match(updates[0].content, /ยกเลิกการกวาดยศแล้ว/);
+    assert.match(updates[0].content, /ยกเลิกการถอดยศแล้ว/);
 });
 
 test("target shortcut parser accepts single ID or mention and rejects missing or multiple IDs", () => {

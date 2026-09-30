@@ -290,6 +290,7 @@ async function handleDmPanelModal(interaction) {
     }
 
     await interaction.deferReply({ flags: 64 });
+    await interaction.editReply({ content: `${config.emojis?.loading || '⏳'} กำลังโหลด...` }).catch(() => null);
 
     const inputs = extractDmModalInputs(interaction.fields);
     const validationError = validateDmModalFields(inputs);

@@ -101,9 +101,9 @@ const slashCommandsData = [
 
     {
         name: "clear",
-        description: "ลบข้อความในช่องปัจจุบัน รวมข้อความเกิน 14 วัน (สูงสุด 1,000)",
+        description: "ลบข้อความในช่องนี้ สูงสุด 1,000 ข้อความ",
         options: [
-            { type: 4, name: "amount", description: "จำนวนข้อความ (1-1000)", required: true, min_value: 1, max_value: 1000 }
+            { type: 4, name: "amount", description: "จำนวนข้อความที่ต้องการลบ (1-1,000)", required: true, min_value: 1, max_value: 1000 }
         ]
     },
 
@@ -144,23 +144,23 @@ const slashCommandsData = [
 
     {
         name: "copy-emojis",
-        description: "ดึงอิโมจิเข้าเซิร์ฟเวอร์ (สูงสุด 50 ตัว)",
+        description: "คัดลอกอิโมจิเข้าเซิร์ฟเวอร์ สูงสุด 50 ตัว",
         options: [
-            { type: 3, name: "emojis", description: "วางอิโมจิที่ต้องการดึง", required: true }
+            { type: 3, name: "emojis", description: "อิโมจิที่ต้องการคัดลอก", required: true }
         ]
     },
 
-    { name: "voice-admin", description: "เปิดแผงจัดการสมาชิกในห้องเสียงนี้ (เฉพาะผู้ดูแล)" },
+    { name: "voice-admin", description: "เปิดแผงจัดการห้องเสียง (เฉพาะผู้ดูแล)" },
 
     {
         name: "ban",
-        description: "แบนสมาชิกออกจากเซิร์ฟเวอร์ พร้อมเก็บบันทึกประวัติ",
+        description: "แบนสมาชิกออกจากเซิร์ฟเวอร์",
         options: [
-            { type: 6, name: "target", description: "สมาชิกเป้าหมายที่ต้องการแบน", required: true },
+            { type: 6, name: "target", description: "สมาชิกที่ต้องการแบน", required: true },
             {
                 type: 4,
                 name: "delete_messages",
-                description: "เลือกลบประวัติข้อความย้อนหลังของสมาชิก",
+                description: "ข้อความย้อนหลังที่จะลบ",
                 required: false,
                 choices: [
                     { name: "ไม่ลบข้อความ", value: 0 },
@@ -177,69 +177,69 @@ const slashCommandsData = [
 
     {
         name: "kick",
-        description: "เตะสมาชิกออกจากเซิร์ฟเวอร์ พร้อมเก็บบันทึกประวัติ",
+        description: "เตะสมาชิกออกจากเซิร์ฟเวอร์",
         options: [
-            { type: 6, name: "target", description: "สมาชิกเป้าหมายที่ต้องการเตะ", required: true },
+            { type: 6, name: "target", description: "สมาชิกที่ต้องการเตะ", required: true },
             { type: 3, name: "reason", description: "เหตุผลในการเตะ", required: false, max_length: 500 }
         ]
     },
 
     {
         name: "timeout",
-        description: "ระงับการใช้งานสมาชิกชั่วคราว หรือระบุ 0 เพื่อปลด",
+        description: "ตั้ง Timeout ให้สมาชิก หรือใส่ 0 เพื่อปลด",
         options: [
-            { type: 6, name: "target", description: "สมาชิกเป้าหมายที่ต้องการระงับการใช้งาน", required: true },
-            { type: 4, name: "duration", description: "จำนวนระยะเวลา (ใส่ 0 เพื่อปลด Timeout)", required: true, min_value: 0 },
+            { type: 6, name: "target", description: "สมาชิกที่ต้องการ Timeout", required: true },
+            { type: 4, name: "duration", description: "ระยะเวลา Timeout (ใส่ 0 เพื่อปลด)", required: true, min_value: 0 },
             {
                 type: 3,
                 name: "unit",
-                description: "หน่วยของระยะเวลา (ค่าเริ่มต้น: นาที)",
+                description: "หน่วยเวลา",
                 required: false,
                 choices: [
-                    { name: "นาที (Minutes)", value: "minutes" },
-                    { name: "ชั่วโมง (Hours)", value: "hours" },
-                    { name: "วัน (Days)", value: "days" },
-                    { name: "วินาที (Seconds)", value: "seconds" }
+                    { name: "นาที", value: "minutes" },
+                    { name: "ชั่วโมง", value: "hours" },
+                    { name: "วัน", value: "days" },
+                    { name: "วินาที", value: "seconds" }
                 ]
             },
-            { type: 3, name: "reason", description: "เหตุผลในการระงับการใช้งาน", required: false, max_length: 500 }
+            { type: 3, name: "reason", description: "เหตุผลในการ Timeout", required: false, max_length: 500 }
         ]
     },
 
     {
         name: "setup-verify",
-        description: "ติดตั้งแผงยืนยันตัวตน พร้อมระบบให้ยศอัตโนมัติ",
+        description: "ติดตั้งแผงยืนยันตัวตนและมอบยศอัตโนมัติ",
         options: [
-            { type: 7, name: "channel", description: "ห้องข้อความที่จะให้บอทส่งแผงยืนยันตัวตน", required: true },
-            { type: 8, name: "role", description: "ยศที่จะมอบให้สมาชิกหลังยืนยันตัวตนสำเร็จ", required: true },
-            { type: 5, name: "verify_type", description: "เปิด = OAuth2 | ปิด = กดรับยศทันที | ไม่กรอก = OAuth2", required: false },
-            { type: 3, name: "content", description: "ข้อความนอก Embed เช่น @everyone หรือข้อความประกาศ", required: false, max_length: 2000 },
-            { type: 3, name: "title", description: "หัวข้อหลักของ Embed ถ้าไม่กรอกจะใช้ค่าเริ่มต้น", required: false, max_length: 256 },
-            { type: 3, name: "description", description: String.raw`คำอธิบายใน Embed ใช้ \n เพื่อขึ้นบรรทัดใหม่ได้`, required: false, max_length: 4096 },
-            { type: 3, name: "button_text", description: "ข้อความปุ่ม เช่น ✅ ยืนยันตัวตน ✅ หรือ <:verify:id> ยืนยันตัวตน ✅", required: false, max_length: 80 },
-            { type: 3, name: "color", description: "สีขอบ Embed แบบ HEX เช่น #5865F2 หรือ FF0000", required: false },
-            { type: 3, name: "image", description: "ลิงก์รูปภาพหลักขนาดใหญ่ใน Embed", required: false, max_length: 2048 },
-            { type: 3, name: "thumbnail", description: "ลิงก์รูปภาพเล็กมุมขวาของ Embed", required: false, max_length: 2048 },
-            { type: 3, name: "footer", description: "ข้อความท้าย Embed เช่น Verification System", required: false, max_length: 2048 },
-            { type: 5, name: "timestamp", description: "เปิดหรือปิดเวลาใต้ Embed", required: false },
-            { type: 3, name: "url", description: "ลิงก์ที่หัวข้อ Embed จะกดเข้าไปได้", required: false, max_length: 2048 }
+            { type: 7, name: "channel", description: "ห้องที่จะส่งแผงยืนยันตัวตน", required: true },
+            { type: 8, name: "role", description: "ยศที่จะมอบหลังยืนยันตัวตนสำเร็จ", required: true },
+            { type: 5, name: "verify_type", description: "เปิดเพื่อใช้ OAuth2 หรือปิดเพื่อให้กดรับยศทันที", required: false },
+            { type: 3, name: "content", description: "ข้อความที่จะส่งพร้อมแผง", required: false, max_length: 2000 },
+            { type: 3, name: "title", description: "หัวข้อของ Embed", required: false, max_length: 256 },
+            { type: 3, name: "description", description: "รายละเอียดของ Embed", required: false, max_length: 4096 },
+            { type: 3, name: "button_text", description: "ข้อความบนปุ่มยืนยัน", required: false, max_length: 80 },
+            { type: 3, name: "color", description: "สีของ Embed แบบ HEX", required: false },
+            { type: 3, name: "image", description: "ลิงก์รูปภาพหลัก", required: false, max_length: 2048 },
+            { type: 3, name: "thumbnail", description: "ลิงก์รูปภาพขนาดเล็ก", required: false, max_length: 2048 },
+            { type: 3, name: "footer", description: "ข้อความท้าย Embed", required: false, max_length: 2048 },
+            { type: 5, name: "timestamp", description: "แสดงเวลาที่ท้าย Embed", required: false },
+            { type: 3, name: "url", description: "ลิงก์เมื่อกดหัวข้อ Embed", required: false, max_length: 2048 }
         ]
     },
 
     {
         name: "re-role",
-        description: "คำนวณและกวาดยศสมาชิก โดยเว้นยศที่เลือกไว้ หรือระบุยศเป้าหมายเพื่อถอดยศเฉพาะ",
+        description: "ถอดยศสมาชิกทั้งหมด หรือเลือกยศที่ต้องการถอดได้",
         options: [
             {
                 type: 8,
                 name: "target_role",
-                description: "ยศเป้าหมายที่ต้องการถอดออก (หากไม่ระบุ จะกวาดยศทั้งหมด)",
+                description: "ยศที่ต้องการถอด หากไม่เลือกจะถอดยศที่บอทจัดการได้ทั้งหมด",
                 required: false
             },
             ...[1, 2, 3, 4, 5].map(index => ({
                 type: 8,
                 name: `role_${index}`,
-                description: `ยศที่ ${index} ที่ต้องการเว้นไว้ (ไม่ให้ถูกลบ)`,
+                description: "ยศที่ต้องการเว้นไว้",
                 required: false
             }))
         ]
@@ -268,7 +268,7 @@ const slashCommandsData = [
 
     {
         name: "token-check",
-        description: "เปิดแผงตรวจสอบ Discord Token (เฉพาะเจ้าของบอท)"
+        description: "เปิดแผงตรวจสอบ Discord Token"
     },
 
     {
