@@ -67,7 +67,7 @@ refreshable for compatibility, but no route creates new grants.
 
 ## Slash commands
 
-The runtime registers exactly 17 guild-only commands: `/voice-online`,
+The runtime registers exactly 18 guild-only commands: `/voice-online`,
 `/serverinfo`, `/ping`, `/userinfo`, `/clear`, `/say`,
 `/embed` (with `/embed create`), `/copy-emojis`, `/voice-admin`, `/ban`,
 `/kick`, `/timeout`, `/setup-verify`, `/re-role`, `/quest`, `/token-check`, and `/dm-panel`. Registration retries are bounded and

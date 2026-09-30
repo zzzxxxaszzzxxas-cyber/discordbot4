@@ -1,11 +1,4 @@
 /* eslint-disable complexity -- Utility command flows are behavior-sensitive; refactor separately. */
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE] ⚠️
-DO NOT REMOVE: activeEmojiCopies Set — race condition guard.
-DO NOT REMOVE: finally blocks — they MUST unlock Sets after every operation.
-================================================================================
-*/
 
 const {
     MessageEmbed,
@@ -127,7 +120,7 @@ async function validateEmbedCreateTarget(interaction) {
     if (!await requireMemberPermission(
         interaction,
         PermissionFlagsBits.Administrator,
-        `> ⛔ คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น`
+        `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น`
     )) return null;
 
     const targetChannel = interaction.options.getChannel("channel") || interaction.channel;
@@ -536,10 +529,7 @@ function resolveEmojiCreateFailureReason(err) {
     if (err?.code === 50035 || err?.message?.includes("name")) {
         return "ชื่ออิโมจิไม่ถูกต้องตามกฎ";
     }
-    if (err?.message) {
-        return err.message.slice(0, 100);
-    }
-    return "Discord ปฏิเสธการสร้าง";
+    return "ไม่สามารถนำเข้าอิโมจินี้ได้";
 }
 
 async function createSingleEmoji(interaction, item) {
@@ -643,7 +633,7 @@ async function handleSteal(interaction, { delayMs = 1200 } = {}) {
     if (!await requireMemberPermission(
         interaction,
         PermissionFlagsBits.Administrator,
-        `> ⛔ คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น`
+        `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น`
     )) return;
 
     if (!await requireBotPermission(

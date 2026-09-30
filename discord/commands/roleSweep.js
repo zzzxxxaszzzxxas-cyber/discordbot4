@@ -313,7 +313,6 @@ function buildPreviewEmbed(guild, stats, exceptRoleIds = [], actorId = null, tar
             inline: false
         }
     )
-    .setFooter({ text: "Phomueangtai Personal Multi-Tool • Role Sweep" })
     .setTimestamp();
 
     const iconUrl = guild?.iconURL?.({ forceStatic: false, size: 256 }) || guild?.iconURL?.();
@@ -331,30 +330,35 @@ function buildSummaryEmbed(guild, { changedMembers, removedAssignments, failedAs
 
     let color = config.system?.themeColors?.error || 0xED4245;
     let title = `${warningEmoji} ถอดยศได้บางส่วน`;
-    let statusBanner = `${warningEmoji} **ถอดยศได้บางส่วน (มีบางรายการไม่สำเร็จ)**`;
+    let statusText = "";
 
     if (cancelled) {
         color = config.system?.themeColors?.warning || 0xFEE75C;
         title = `${warningEmoji} ยกเลิกการถอดยศแล้ว`;
-        statusBanner = `${warningEmoji} **หยุดการถอดยศแล้ว ไม่มีการเปลี่ยนแปลงยศเพิ่มเติม**`;
+        statusText = "> หยุดการถอดยศแล้ว ไม่มีการเปลี่ยนแปลงยศเพิ่มเติม";
     } else if (isSuccess) {
         color = config.system?.themeColors?.success || 0x57F287;
         title = `${successEmoji} ถอดยศเรียบร้อย`;
-        statusBanner = `${successEmoji} **ถอดยศเสร็จสมบูรณ์**`;
+        statusText = "";
     } else if (removedAssignments === 0 && failedAssignments > 0) {
         color = config.system?.themeColors?.error || 0xED4245;
         title = `${errorEmoji} ถอดยศไม่สำเร็จ`;
-        statusBanner = `${errorEmoji} **ถอดยศไม่สำเร็จ**`;
+        statusText = "> ถอดยศไม่สำเร็จ";
+    } else {
+        statusText = "> ถอดยศได้บางส่วน มีบางรายการไม่สำเร็จ";
     }
 
     const targetDesc = targetRoleId
-        ? `\n\n**ยศเป้าหมายที่ถอด:** <@&${targetRoleId}>`
-        : (exceptRoleIds.length > 0 ? `\n\n**ยศที่ได้รับการยกเว้น:**\n${formatExceptRoles(exceptRoleIds)}` : "");
+        ? `**ยศเป้าหมายที่ถอด:** <@&${targetRoleId}>`
+        : (exceptRoleIds.length > 0 ? `**ยศที่ได้รับการยกเว้นจากการถอดยศ:**\n${formatExceptRoles(exceptRoleIds)}` : "");
+
+    const descParts = [statusText, targetDesc].filter(Boolean);
+    const description = descParts.length > 0 ? descParts.join("\n\n") : "> ถอดยศเสร็จสิ้นเรียบร้อย";
 
     const embed = new EmbedBuilder()
         .setColor(color)
         .setTitle(title)
-        .setDescription(`${statusBanner}${targetDesc}`)
+        .setDescription(description)
         .addFields(
             {
                 name: "รายละเอียดการดำเนินการ",
@@ -364,16 +368,7 @@ function buildSummaryEmbed(guild, { changedMembers, removedAssignments, failedAs
                 inline: false
             }
         )
-        .setFooter({ text: "Phomueangtai Personal Multi-Tool • Role Sweep" })
         .setTimestamp();
-
-    if (targetRoleId) {
-        embed.addFields({
-            name: "ยศเป้าหมาย",
-            value: `<@&${targetRoleId}>`,
-            inline: false
-        });
-    }
 
     if (actorId) {
         embed.addFields({
@@ -395,10 +390,8 @@ function buildCancelEmbed(guild, actorId = null) {
         .setColor(config.system?.themeColors?.warning || 0xFEE75C)
         .setTitle(`${warningEmoji} ยกเลิกการถอดยศแล้ว`)
         .setDescription(
-            `### ${warningEmoji} งานถอดยศถูกยกเลิกแล้ว\n` +
             `> ไม่มีการเปลี่ยนแปลงยศใด ๆ ในเซิร์ฟเวอร์`
         )
-        .setFooter({ text: "Phomueangtai Personal Multi-Tool • Role Sweep" })
         .setTimestamp();
 
     if (actorId) {
@@ -421,11 +414,9 @@ function buildExpiredEmbed(guild) {
         .setColor(config.system?.themeColors?.error || 0xED4245)
         .setTitle(`${warningEmoji} คำขอหมดอายุแล้ว`)
         .setDescription(
-            `### ${warningEmoji} หมดเวลาการยืนยันคำขอถอดยศ\n` +
             `> คำขอนี้เกินกำหนดเวลา 60 วินาที ระบบได้ยกเลิกงานอัตโนมัติเพื่อความปลอดภัย\n` +
             `> ไม่มีการเปลี่ยนแปลงยศใด ๆ ในเซิร์ฟเวอร์`
         )
-        .setFooter({ text: "Phomueangtai Personal Multi-Tool • Role Sweep" })
         .setTimestamp();
 
     const iconUrl = guild?.iconURL?.({ forceStatic: false, size: 256 }) || guild?.iconURL?.();
@@ -731,7 +722,7 @@ async function handleTargetShortcut(message) {
     if (!parsed.matched) return false;
     await message.delete?.().catch(() => {});
     if (!isGuildOwner(message.author?.id, message.guild)) {
-        await replyMessage(message, `> ⛔ คำสั่งนี้สงวนไว้สำหรับเจ้าของเซิร์ฟเวอร์หรือ Owner ของบอท`);
+        await replyMessage(message, `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้สงวนไว้สำหรับเจ้าของเซิร์ฟเวอร์หรือ Owner ของบอท`);
         return true;
     }
     const errorEmoji = config.emojis?.error || "❌";
@@ -779,7 +770,7 @@ async function handleShortcut(message) {
     if (!parsed.matched) return false;
     await message.delete?.().catch(() => {});
     if (!isGuildOwner(message.author?.id, message.guild)) {
-        await replyMessage(message, `> ⛔ คำสั่งนี้สงวนไว้สำหรับเจ้าของเซิร์ฟเวอร์หรือ Owner ของบอท`);
+        await replyMessage(message, `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้สงวนไว้สำหรับเจ้าของเซิร์ฟเวอร์หรือ Owner ของบอท`);
         return true;
     }
     const errorEmoji = config.emojis?.error || "❌";
@@ -849,7 +840,7 @@ function validateSlashTargetRole(targetRole, guild, exceptRoleIds) {
 async function handleSlashCommand(interaction) {
     if (!isGuildOwner(interaction.user?.id, interaction.guild)) {
         return interaction.reply({
-            content: `> ⛔ คำสั่งนี้สงวนไว้สำหรับเจ้าของเซิร์ฟเวอร์หรือ Owner ของบอท`,
+            content: `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้สงวนไว้สำหรับเจ้าของเซิร์ฟเวอร์หรือ Owner ของบอท`,
             ephemeral: true
         });
     }
@@ -903,7 +894,7 @@ async function handleRoleSweepButton(interaction) {
 
     if (String(interaction.user?.id || "") !== pending.actorId) {
         return interaction.reply({
-            content: `> ${config.emojis?.error || "⛔"} เฉพาะผู้ที่เรียกคำสั่งเท่านั้นที่สามารถกดยืนยันหรือยกเลิกได้`,
+            content: `> ${config.emojis?.no_entry || "⛔"} เฉพาะผู้ที่เรียกคำสั่งเท่านั้นที่สามารถกดยืนยันหรือยกเลิกได้`,
             ephemeral: true
         }).catch(() => null);
     }

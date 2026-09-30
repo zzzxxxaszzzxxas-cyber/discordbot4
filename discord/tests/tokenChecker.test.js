@@ -11,9 +11,9 @@ const {
     getAccountAgeString,
     resolveNitroPlan,
     resolveAvatarUrl,
+    resolveInvalidTokenErrorMessage,
     buildSingleTokenEmbed,
     buildBatchSummaryEmbed,
-    createCategoryAttachments,
     THEME_COLORS
 } = require('../features/tokenChecker');
 
@@ -157,30 +157,31 @@ test('tokenChecker embed builders produce correct outputs', () => {
     assert.match(botEmbed.data.description, /Broadcast Helper/);
     assert.match(botEmbed.data.description, /\[BOT\]/);
 
-    // 5. Category attachments with Bot (verifies masked tokens only)
-    const attachments = createCategoryAttachments({
-        bot: [{ token: 'bot_token_123', maskedToken: 'bo******23' }],
-        normal: [{ token: 'normal_token_456', maskedToken: 'no******56' }]
-    });
-    assert.equal(attachments.length, 2);
-    assert.equal(attachments.some(a => a.name === 'tokens_bot.txt'), true);
-    assert.ok(attachments.find(a => a.name === 'tokens_bot.txt').attachment.toString('utf8').includes('bo******23'));
-    assert.ok(!attachments.find(a => a.name === 'tokens_bot.txt').attachment.toString('utf8').includes('bot_token_123'));
+    // 5. resolveInvalidTokenErrorMessage sanitizes technical errors
+    assert.equal(resolveInvalidTokenErrorMessage({ errorType: 'INVALID' }), 'Token ไม่ถูกต้อง หรือหมดอายุแล้ว');
+    assert.equal(resolveInvalidTokenErrorMessage({ errorType: 'LOCKED' }), 'บัญชีถูกระงับ หรือติดด่านยืนยันความปลอดภัย');
+    assert.equal(resolveInvalidTokenErrorMessage({ errorType: 'QUARANTINED' }), 'Token ติดสถานะกักกัน ไม่สามารถใช้งานได้');
+    assert.equal(resolveInvalidTokenErrorMessage({ errorType: 'NETWORK_ERROR' }), 'การเชื่อมต่อขัดข้องหรือหมดเวลา');
+    assert.equal(resolveInvalidTokenErrorMessage({ errorType: 'HTTP_500' }), 'ตรวจสอบ Token ไม่สำเร็จ');
+    assert.equal(resolveInvalidTokenErrorMessage({ errorType: 'HTTP_429' }), 'ตรวจสอบ Token ไม่สำเร็จ');
 
-    // 6. Category attachments
-    const groups = {
-        boost: [{ token: 'token_boost_1', maskedToken: 'to******_1' }],
-        nitro: [],
-        normal: [{ token: 'token_normal_1', maskedToken: 'to******_1' }, { token: 'token_normal_2', maskedToken: 'to******_2' }],
-        invalid: [{ token: 'token_invalid_1', maskedToken: 'to******_1' }]
-    };
-    const files = createCategoryAttachments(groups);
-    assert.equal(files.length, 3);
-    const names = files.map(f => f.name);
-    assert.ok(names.includes('tokens_boost.txt'));
-    assert.ok(!names.includes('tokens_nitro.txt'));
-    assert.ok(names.includes('tokens_normal.txt'));
-    assert.ok(names.includes('tokens_invalid.txt'));
+    // 6. Batch summary displays all 20 tokens without truncation
+    const batch20Results = Array.from({ length: 20 }, (_, i) => ({
+        valid: true,
+        maskedToken: `to******_${i + 1}`,
+        username: `User${i + 1}`,
+        id: `10000000000000000${i + 1}`,
+        hasNitro: false,
+        hasBoost: false
+    }));
+    const batch20Embed = buildBatchSummaryEmbed({
+        summary: { total: 20, boost: 0, nitro: 0, normal: 20, bot: 0, invalid: 0, valid: 20 },
+        results: batch20Results
+    });
+    assert.match(batch20Embed.data.description, /1\. 🟢 ปกติ \*\*User1\*\*/);
+    assert.match(batch20Embed.data.description, /20\. 🟢 ปกติ \*\*User20\*\*/);
+    assert.equal(batch20Embed.data.description.includes('และอีก'), false);
+    assert.equal(Boolean(batch20Embed.data.footer), false);
 });
 
 test('tokenCheck command and interactions behave correctly', async () => {

@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] - 2026-09-30
+
+- **UI/UX Renovation — Cleanup & Polish Pass (all 9 guild commands):**
+  - `/token-check`: Expanded batch embed display from 15 → 20 tokens (full coverage, no hidden results). Removed raw token file attachment (`createCategoryAttachments` dead code). Added `resolveInvalidTokenErrorMessage()` mapping error codes to Thai user-facing strings; replaced `result.errorMessage` direct exposure. Removed `.setFooter()` from all embed branches. Error emoji updated to `no_entry` for consistency.
+  - `/copy-emojis`: Removed raw `err.message` leak in `resolveEmojiCreateFailureReason()` fallback — now returns `"ไม่สามารถนำเข้าอิโมจินี้ได้"` instead of Discord internal error text. Fixed `handleSteal` Administrator check to use `config.emojis?.no_entry` instead of hardcoded `⛔`.
+  - `/re-role`: Removed duplicate status banner from `buildSummaryEmbed`. Removed duplicate `ยศเป้าหมาย` field. Simplified `buildCancelEmbed` and `buildExpiredEmbed` descriptions. Removed `.setFooter()` from all 4 embed builders. All `⛔` hardcoded literals replaced with `config.emojis?.no_entry`.
+  - `/voice-admin`: Replaced hardcoded `⛔` in `handleVoiceAdminCommand` access error with `config.emojis?.no_entry`.
+  - `/setup-verify`: Replaced hardcoded `🔒` in owner-only error with `config.emojis?.no_entry`.
+  - `/utility.js`: Removed `⚠️ [AI COGNITIVE DIRECTIVE] ⚠️` block comment banner; replaced with plain code comments preserving intent. Fixed `validateEmbedCreateTarget` to use `config.emojis?.no_entry`.
+  - `/moderation.js`: Removed `⚠️ [AI COGNITIVE DIRECTIVE] ⚠️` block comment banner; replaced with plain code comments preserving intent.
+- **Security:** Removed `createCategoryAttachments` which created plaintext token files as Discord attachments. `resolveInvalidTokenErrorMessage` now maps internal error types to safe Thai strings only.
+- **Dependencies:** Updated `qs` 6.15.3 → 6.16.0 and `ip-address` 10.5.0 → 10.7.2 to resolve moderate audit advisories. `npm audit` now reports 0 vulnerabilities.
+- **Documentation:** Updated `README.md` guild command count 17 → 18. Synced `docs/EMOJIS.md` section 2.1 header to reflect 28 active keys (4 removed entries noted).
+
 ## [Unreleased] - 2026-09-22
 
 - Migrated Announcement Command `/announce` to Modernized `/embed create` Subsystem:

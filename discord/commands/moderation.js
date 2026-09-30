@@ -1,10 +1,5 @@
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE] ⚠️
-DO NOT REMOVE: finally blocks — they unlock race condition guards.
-DO NOT SIMPLIFY: Permission check chain — each check serves a specific purpose.
-================================================================================
-*/
+// NOTE: Do not remove finally blocks — they unlock race condition guards.
+// NOTE: Do not simplify the permission check chain — each check serves a distinct purpose.
 
 const { PermissionFlagsBits } = require("discord.js");
 const config = require("../config.json");

@@ -1,6 +1,6 @@
 'use strict';
 
-const { AttachmentBuilder, MessageEmbed } = require('../core/discordCompat');
+const { MessageEmbed } = require('../core/discordCompat');
 const { buildUserHeaders } = require('../quest/core/clientProfile');
 const tokenCoordinator = require('../core/tokenCoordinator');
 const config = require('../config.json');
@@ -418,6 +418,19 @@ async function checkBatchTokens(tokens = [], optionsOrDelay = {}) {
     };
 }
 
+function resolveInvalidTokenErrorMessage(result) {
+    if (!result) return 'Token ใช้งานไม่ได้';
+    if (result.errorType === 'EMPTY') return 'ไม่พบข้อมูล Token';
+    if (result.errorType === 'INVALID') return 'Token ไม่ถูกต้อง หรือหมดอายุแล้ว';
+    if (result.errorType === 'LOCKED') return 'บัญชีถูกระงับ หรือติดด่านยืนยันความปลอดภัย';
+    if (result.errorType === 'QUARANTINED') return 'Token ติดสถานะกักกัน ไม่สามารถใช้งานได้';
+    if (result.errorType === 'NETWORK_ERROR') return 'การเชื่อมต่อขัดข้องหรือหมดเวลา';
+    if (typeof result.errorType === 'string' && result.errorType.startsWith('HTTP_')) {
+        return 'ตรวจสอบ Token ไม่สำเร็จ';
+    }
+    return result.errorMessage || 'Token ใช้งานไม่ได้';
+}
+
 function buildSingleTokenEmbed(result) {
     const errorEmoji = config.emojis?.error || '❌';
     const successEmoji = config.emojis?.success || '✅';
@@ -430,10 +443,9 @@ function buildSingleTokenEmbed(result) {
             .setColor(THEME_COLORS.INVALID)
             .setTitle(`${errorEmoji} ผลการตรวจสอบ Discord Token: ใช้งานไม่ได้`)
             .setDescription([
-                `**สถานะ:** ${errorEmoji} \`${result.errorMessage || 'Invalid Token'}\``,
+                `**สถานะ:** ${errorEmoji} \`${resolveInvalidTokenErrorMessage(result)}\``,
                 `**Token:** \`${result.maskedToken}\``
             ].join('\n'))
-            .setFooter({ text: 'Phomueangtai Personal Multi-Tool • Token Checker' })
             .setTimestamp();
     }
 
@@ -455,7 +467,6 @@ function buildSingleTokenEmbed(result) {
                 `**สร้างเมื่อ:** ${createdDisplay}`,
                 `**Token:** \`${result.maskedToken}\``
             ].join('\n'))
-            .setFooter({ text: 'Phomueangtai Personal Multi-Tool • Token Checker' })
             .setTimestamp();
 
         if (result.avatarUrl) {
@@ -528,7 +539,6 @@ function buildSingleTokenEmbed(result) {
                 inline: false
             }
         )
-        .setFooter({ text: 'Phomueangtai Personal Multi-Tool • Token Checker' })
         .setTimestamp();
 }
 
@@ -542,7 +552,7 @@ function resolveBatchItemPlanTag(item) {
 function formatBatchItemLine(item, index) {
     const errorEmoji = config.emojis?.error || '❌';
     if (!item.valid) {
-        return `${index}. ${errorEmoji} \`${item.maskedToken}\` — ${item.errorMessage || 'Invalid'}`;
+        return `${index}. ${errorEmoji} \`${item.maskedToken}\` — ${resolveInvalidTokenErrorMessage(item)}`;
     }
     const planTag = resolveBatchItemPlanTag(item);
     const expireNote = item.hasNitro ? ` · เหลือ ${item.expireDays} วัน` : '';
@@ -573,42 +583,19 @@ function buildBatchSummaryEmbed(batchData) {
         `• ${errorEmoji} **Token ใช้งานไม่ได้:** \`${summary.invalid}\``
     ].filter(Boolean).join('\n');
 
-    // Show up to 15 items in embed
-    const previewList = results.slice(0, 15).map((item, idx) => formatBatchItemLine(item, idx + 1));
-    if (results.length > 15) {
-        previewList.push(`... และอีก ${results.length - 15} Token`);
+    // Show up to 20 items in embed (maximum batch limit)
+    const previewList = results.slice(0, 20).map((item, idx) => formatBatchItemLine(item, idx + 1));
+    if (results.length > 20) {
+        previewList.push(`... และอีก ${results.length - 20} Token`);
     }
 
     const embed = new MessageEmbed()
         .setColor(color)
         .setTitle(`${successEmoji} ตรวจสอบเสร็จแล้ว`)
         .setDescription(`${summaryText}\n\n**รายการ Token:**\n${previewList.join('\n')}`)
-        .setFooter({ text: 'Phomueangtai Personal Multi-Tool • Token Checker' })
         .setTimestamp();
 
     return embed;
-}
-
-function createCategoryAttachments(groups) {
-    const attachments = [];
-
-    const fileMap = [
-        { key: 'boost', fileName: 'tokens_boost.txt' },
-        { key: 'nitro', fileName: 'tokens_nitro.txt' },
-        { key: 'normal', fileName: 'tokens_normal.txt' },
-        { key: 'bot', fileName: 'tokens_bot.txt' },
-        { key: 'invalid', fileName: 'tokens_invalid.txt' }
-    ];
-
-    for (const { key, fileName } of fileMap) {
-        const items = groups[key] || [];
-        if (items.length > 0) {
-            const content = items.map(item => item.maskedToken || maskToken(item.token || '')).join('\n');
-            attachments.push(new AttachmentBuilder(Buffer.from(content, 'utf8'), { name: fileName }));
-        }
-    }
-
-    return attachments;
 }
 
 module.exports = {
@@ -619,11 +606,11 @@ module.exports = {
     getAccountAgeString,
     resolveNitroPlan,
     resolveAvatarUrl,
+    resolveInvalidTokenErrorMessage,
     checkSingleToken,
     checkBatchTokens,
     buildSingleTokenEmbed,
     buildBatchSummaryEmbed,
-    createCategoryAttachments,
     buildValidBotProfile,
     fetchDiscordBot
 };

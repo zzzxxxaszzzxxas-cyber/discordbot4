@@ -71,7 +71,7 @@ async function handleTokenCheckCommand(interaction) {
 
     if (!isBotOwner(interaction.user?.id)) {
         return safeReply(interaction, {
-            content: `${config.emojis?.error || '🔒'} คำสั่งเปิดแผงควบคุม \`/token-check\` สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
+            content: `${config.emojis?.no_entry || '⛔'} คำสั่งเปิดแผงควบคุม \`/token-check\` สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
             flags: 64
         });
     }
@@ -96,9 +96,10 @@ async function handleTokenCheckCommand(interaction) {
 }
 
 async function handleTokenCheckButton(interaction) {
+    const searchEmoji = config.emojis?.search || '🔍';
     const modal = new Modal()
         .setCustomId(IDS.MODAL_TOKEN_CHECK)
-        .setTitle('🔍 ตรวจสอบ Discord Token');
+        .setTitle(`${searchEmoji} ตรวจสอบ Discord Token`);
 
     const tokenInput = new TextInputComponent()
         .setCustomId(IDS.FIELD_TOKEN_INPUT)

@@ -737,7 +737,7 @@ async function runPanelAction(interaction, action, destination = null) {
 }
 async function handleVoiceAdminCommand(interaction) {
     const access = verifyVoiceAdminAccess(interaction.member, interaction.channel);
-    if (access) return interaction.reply({ content: `> ⛔ ${access}`, ephemeral: true });
+    if (access) return interaction.reply({ content: `> ${config.emojis?.no_entry || "⛔"} ${access}`, ephemeral: true });
     const reply = await interaction.reply({ ...buildPanel(interaction.channel), ephemeral: true });
     markCommandAccepted(interaction);
     return reply;

@@ -874,7 +874,7 @@ function buildVerificationSetupResultEmbed({
 async function handleSetupVerify(interaction) {
     if (!isConfiguredOwner(config, interaction.user?.id)) {
         return interaction.reply({
-            content: `> 🔒 คำสั่งนี้สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
+            content: `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
             ephemeral: true
         });
     }
