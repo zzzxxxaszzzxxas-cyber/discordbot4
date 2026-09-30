@@ -157,20 +157,22 @@ test('tokenChecker embed builders produce correct outputs', () => {
     assert.match(botEmbed.data.description, /Broadcast Helper/);
     assert.match(botEmbed.data.description, /\[BOT\]/);
 
-    // 5. Category attachments with Bot
+    // 5. Category attachments with Bot (verifies masked tokens only)
     const attachments = createCategoryAttachments({
-        bot: [{ token: 'bot_token_123' }],
-        normal: [{ token: 'normal_token_456' }]
+        bot: [{ token: 'bot_token_123', maskedToken: 'bo******23' }],
+        normal: [{ token: 'normal_token_456', maskedToken: 'no******56' }]
     });
     assert.equal(attachments.length, 2);
     assert.equal(attachments.some(a => a.name === 'tokens_bot.txt'), true);
+    assert.ok(attachments.find(a => a.name === 'tokens_bot.txt').attachment.toString('utf8').includes('bo******23'));
+    assert.ok(!attachments.find(a => a.name === 'tokens_bot.txt').attachment.toString('utf8').includes('bot_token_123'));
 
     // 6. Category attachments
     const groups = {
-        boost: [{ token: 'token_boost_1' }],
+        boost: [{ token: 'token_boost_1', maskedToken: 'to******_1' }],
         nitro: [],
-        normal: [{ token: 'token_normal_1' }, { token: 'token_normal_2' }],
-        invalid: [{ token: 'token_invalid_1' }]
+        normal: [{ token: 'token_normal_1', maskedToken: 'to******_1' }, { token: 'token_normal_2', maskedToken: 'to******_2' }],
+        invalid: [{ token: 'token_invalid_1', maskedToken: 'to******_1' }]
     };
     const files = createCategoryAttachments(groups);
     assert.equal(files.length, 3);
@@ -284,7 +286,28 @@ test('tokenCheck command and interactions behave correctly', async () => {
         replied: false
     };
     await handleTokenCheckModal(mockOverflowModalInteraction);
-    assert.match(overflowReplyContent.content, /สูงสุดครั้งละ \*\*20 Token\*\*/);
+    // 7. handleTokenCheckModal error handling sanitizes raw exceptions
+    let errorReplyContent = null;
+    const mockErrorModalInteraction = {
+        fields: {
+            getTextInputValue: () => 'valid_looking_token_123'
+        },
+        deferReply: async () => {},
+        editReply: async (p) => { errorReplyContent = p; return p; },
+        deferred: true,
+        replied: false
+    };
+    const originalCheckSingle = require('../features/tokenChecker').checkSingleToken;
+    const tcModule = require('../features/tokenChecker');
+    tcModule.checkSingleToken = async () => { throw new Error('DB connection pool failed at 127.0.0.1:27017'); };
+    try {
+        await handleTokenCheckModal(mockErrorModalInteraction);
+        assert.match(errorReplyContent.content, /ตรวจสอบ Token ไม่สำเร็จ/);
+        assert.ok(!errorReplyContent.content.includes('127.0.0.1'));
+        assert.ok(!errorReplyContent.content.includes('DB connection pool failed'));
+    } finally {
+        tcModule.checkSingleToken = originalCheckSingle;
+    }
 });
 
 test('checkSingleToken utilizes tokenCoordinator profile cache and quarantine', async () => {

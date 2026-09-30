@@ -848,7 +848,7 @@ function buildVerificationSetupResultEmbed({
             },
             {
                 name: "ประเภท",
-                value: verifyType ? "OAuth2 Direct Authorize" : "กดรับยศทันที",
+                value: verifyType ? "OAuth2" : "กดรับยศทันที",
                 inline: true
             },
             {

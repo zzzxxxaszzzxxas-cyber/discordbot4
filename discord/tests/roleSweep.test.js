@@ -214,9 +214,9 @@ test("preview performs no role mutation and confirmation removes the planned rol
     const message = confirmationMessage(fixture.guild);
     assert.equal(await roleSweep._test.handleConfirmation(message), true);
     assert.deepEqual(fixture.target.calls, [[fixture.regular.id]]);
-    assert.match(message.replies.at(-1).content, /ถอดยศเสร็จแล้ว/);
-    assert.ok(message.replies.at(-1).content.includes(`<@&${fixture.exempt.id}>`));
     assert.ok(message.replies.at(-1).embeds?.[0]);
+    assert.match(message.replies.at(-1).embeds[0].data.description, /ถอดยศ/);
+    assert.ok(message.replies.at(-1).embeds[0].data.description.includes(`<@&${fixture.exempt.id}>`));
 });
 
 test("only the initiating owner can confirm in the original channel", async () => {
@@ -284,7 +284,8 @@ test("confirmation checks the absolute deadline even before the timer callback r
     assert.equal(await roleSweep._test.handleConfirmation(message), true);
     assert.equal(fixture.target.calls.length, 0);
     assert.equal(roleSweep._test.pendingByGuild.has(GUILD_ID), false);
-    assert.match(message.replies.at(-1).content, /หมดเวลายืนยัน/);
+    assert.ok(message.replies.at(-1).embeds?.[0]);
+    assert.match(message.replies.at(-1).embeds[0].data.title, /คำขอหมดอายุแล้ว/);
 });
 
 test("a second role sweep cannot replace a pending sweep in the same guild", async () => {
@@ -477,7 +478,8 @@ test("a changed member count during the confirmation fetch does not abort a vali
     assert.equal(await roleSweep._test.handleConfirmation(message), true);
     assert.equal(fixture.target.calls.length, 1);
     assert.equal(roleSweep._test.activeByGuild.has(GUILD_ID), false);
-    assert.match(message.replies.at(-1).content, /ถอดยศเสร็จแล้ว/);
+    assert.ok(message.replies.at(-1).embeds?.[0]);
+    assert.match(message.replies.at(-1).embeds[0].data.description, /ถอดยศ/);
 });
 
 test("a rejected confirmation fetch aborts without removal and releases the active lock when no cache exists", async () => {
@@ -517,7 +519,8 @@ test("confirmation fetch failure seamlessly falls back to cached preview members
     assert.equal(await roleSweep._test.handleConfirmation(message), true);
     // Verified: sweep was NOT aborted, it seamlessly used cached preview members!
     assert.deepEqual(fixture.target.calls, [[fixture.regular.id]]);
-    assert.match(message.replies.at(-1).content, /ถอดยศเสร็จแล้ว/);
+    assert.ok(message.replies.at(-1).embeds?.[0]);
+    assert.match(message.replies.at(-1).embeds[0].data.description, /ถอดยศ/);
 });
 
 test("chat shortcut is handled before the legacy Voice // command router", async () => {
@@ -764,7 +767,8 @@ test("a Discord removal failure is reported without leaving a running lock", asy
 
     const message = confirmationMessage(fixture.guild);
     await roleSweep._test.handleConfirmation(message);
-    assert.match(message.replies.at(-1).content, /ยศที่ถอดไม่สำเร็จ: \*\*2\*\*/);
+    assert.ok(message.replies.at(-1).embeds?.[0]);
+    assert.match(message.replies.at(-1).embeds[0].data.fields[0].value, /ยศที่ถอดไม่สำเร็จ: \*\*2\*\*/);
     assert.equal(roleSweep._test.activeByGuild.has(GUILD_ID), false);
 });
 
@@ -791,9 +795,10 @@ test("partial failures report failed assignments and keep one sequential request
     assert.equal(fixture.target.calls.length, 1);
     assert.equal(successMember.calls.length, 1);
     assert.equal(failedMember.calls.length, 1);
-    assert.match(message.replies.at(-1).content, /สมาชิกที่เปลี่ยนแปลง: \*\*2\*\*/);
-    assert.match(message.replies.at(-1).content, /ยศที่ถอดสำเร็จ: \*\*3\*\*/);
-    assert.match(message.replies.at(-1).content, /ยศที่ถอดไม่สำเร็จ: \*\*2\*\*/);
+    assert.ok(message.replies.at(-1).embeds?.[0]);
+    assert.match(message.replies.at(-1).embeds[0].data.fields[0].value, /สมาชิกที่เปลี่ยนแปลง: \*\*2\*\*/);
+    assert.match(message.replies.at(-1).embeds[0].data.fields[0].value, /ยศที่ถอดสำเร็จ: \*\*3\*\*/);
+    assert.match(message.replies.at(-1).embeds[0].data.fields[0].value, /ยศที่ถอดไม่สำเร็จ: \*\*2\*\*/);
 });
 
 test("a second sweep is rejected while the active sweep is awaiting Discord", async () => {
@@ -985,10 +990,9 @@ test("button confirm executes sweep, disables components, and edits reply with r
 
     // Summary delivered via editReply
     assert.equal(edits.length, 1);
-    assert.match(edits[0].content, /ถอดยศเสร็จแล้ว/);
-    assert.ok(edits[0].content.includes(`<@&${fixture.exempt.id}>`));
     assert.ok(edits[0].embeds?.[0]);
     assert.equal(edits[0].embeds[0].data.thumbnail?.url, "https://cdn.discordapp.com/icons/guild/icon.png");
+    assert.match(edits[0].embeds[0].data.description, /ถอดยศ/);
     assert.ok(edits[0].embeds[0].data.description.includes(`<@&${fixture.exempt.id}>`));
     assert.deepEqual(edits[0].components, []);
 });
@@ -1016,7 +1020,8 @@ test("button cancel cancels the pending sweep without modifying roles", async ()
     assert.equal(roleSweep.isRoleSweepButton(interaction.customId), true);
     assert.ok(await roleSweep.handleRoleSweepButton(interaction));
     assert.equal(updates.length, 1);
-    assert.match(updates[0].content, /ยกเลิกการถอดยศแล้ว/);
+    assert.ok(updates[0].embeds?.[0]);
+    assert.match(updates[0].embeds[0].data.title, /ยกเลิกการถอดยศแล้ว/);
     assert.equal(roleSweep._test.pendingByGuild.has(GUILD_ID), false);
     assert.equal(fixture.target.calls.length, 0);
 });
@@ -1071,7 +1076,8 @@ test("button rejects expired pending sweep", async () => {
 
     await roleSweep.handleRoleSweepButton(interaction);
     assert.equal(updates.length, 1);
-    assert.match(updates[0].content, /หมดเวลายืนยันแล้ว/);
+    assert.ok(updates[0].embeds?.[0]);
+    assert.match(updates[0].embeds[0].data.title, /คำขอหมดอายุแล้ว/);
     assert.equal(fixture.target.calls.length, 0);
 });
 
@@ -1100,7 +1106,8 @@ test("routeButtonInteraction in commands.js routes role sweep buttons", async ()
 
     await commands.handleInteraction(interaction);
     assert.equal(updates.length, 1);
-    assert.match(updates[0].content, /ยกเลิกการถอดยศแล้ว/);
+    assert.ok(updates[0].embeds?.[0]);
+    assert.match(updates[0].embeds[0].data.title, /ยกเลิกการถอดยศแล้ว/);
 });
 
 test("target shortcut parser accepts single ID or mention and rejects missing or multiple IDs", () => {

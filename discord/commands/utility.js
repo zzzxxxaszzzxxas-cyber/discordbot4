@@ -339,16 +339,6 @@ function checkSmartEmojiQuota(quotas, parsedEmojis) {
     };
 }
 
-function renderEmojiProgressBar(current, total, barLength = 10) {
-    const validTotal = Math.max(1, total || 1);
-    const ratio = Math.min(1, Math.max(0, current / validTotal));
-    const filled = Math.min(barLength, Math.round(ratio * barLength));
-    const empty = barLength - filled;
-    const bar = "▰".repeat(filled) + "▱".repeat(empty);
-    const percent = Math.round(ratio * 100);
-    return `${bar} \`${percent}%\``;
-}
-
 function buildEmojiNoticeEmbed({ title, description, color = config.system.themeColors.error, guild, user }) {
     const embed = new MessageEmbed()
         .setColor(color)
@@ -366,23 +356,6 @@ function buildEmojiNoticeEmbed({ title, description, color = config.system.theme
         });
     }
     return embed;
-}
-
-function buildEmojiProgressEmbed({ current, total, added, skipped, failed, currentEmojiName, isAnimated, guild, user }) {
-    const bar = renderEmojiProgressBar(current, total, 10);
-    return new MessageEmbed()
-        .setColor(config.system.themeColors.warning || "#FEE75C")
-        .setTitle(`${config.emojis.loading} กำลังนำเข้าอิโมจิ (${current}/${total})`)
-        .setDescription(
-            `> ${bar}\n\n` +
-            `> ⏳ **กำลังนำเข้า:** \`:${currentEmojiName || "emoji"}:\` (${isAnimated ? "เคลื่อนไหว ✨" : "ทั่วไป 🖼️"})\n` +
-            `> ⚡ **สถานะปัจจุบัน:** ${config.emojis.success || "✅"} สำเร็จ \`${added}\` | ${config.emojis.warning || "⚠️"} ข้าม \`${skipped}\` | ${config.emojis.error || "❌"} พลาด \`${failed}\``
-        )
-        .setFooter({
-            text: `ผู้สั่ง: ${user?.tag || "ผู้ดูแลระบบ"}`,
-            iconURL: user?.displayAvatarURL?.({ dynamic: true }) || undefined
-        })
-        .setTimestamp();
 }
 
 function formatEmojiShowcase(emojis, isAnimated) {
@@ -740,9 +713,7 @@ module.exports = {
         parseCustomEmojis,
         calculateEmojiQuotas,
         checkSmartEmojiQuota,
-        renderEmojiProgressBar,
         buildEmojiNoticeEmbed,
-        buildEmojiProgressEmbed,
         buildEmojiResultEmbed,
         formatEmojiShowcase,
         formatFailedEmojiList,

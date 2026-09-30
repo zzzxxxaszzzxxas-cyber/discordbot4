@@ -12,13 +12,7 @@ const config = require('../config.json');
 const { IDS } = require('./customIds');
 const { safeReply, safeDefer, markCommandAccepted } = require('../guards/commandGuards');
 const { isConfiguredOwner } = require('../core/env');
-const {
-    checkSingleToken,
-    checkBatchTokens,
-    buildSingleTokenEmbed,
-    buildBatchSummaryEmbed,
-    createCategoryAttachments
-} = require('../features/tokenChecker');
+const tokenChecker = require('../features/tokenChecker');
 
 const MAX_BATCH_TOKENS = 20;
 const TOKEN_CHECK_BANNER_ATTACHMENT_NAME = 'token-check-banner.gif';
@@ -146,8 +140,8 @@ async function handleTokenCheckModal(interaction) {
                 content: `${loadingEmoji} กำลังตรวจสอบ...`
             }).catch(() => null);
 
-            const result = await checkSingleToken(tokens[0]);
-            const embed = buildSingleTokenEmbed(result);
+            const result = await tokenChecker.checkSingleToken(tokens[0]);
+            const embed = tokenChecker.buildSingleTokenEmbed(result);
             return await interaction.editReply({ content: null, embeds: [embed] });
         }
 
@@ -155,7 +149,7 @@ async function handleTokenCheckModal(interaction) {
             content: `${loadingEmoji} กำลังตรวจสอบ...`
         }).catch(() => null);
 
-        const batchData = await checkBatchTokens(tokens, {
+        const batchData = await tokenChecker.checkBatchTokens(tokens, {
             delayMs: 150,
             onProgress: async (current, total) => {
                 await interaction.editReply({
@@ -163,18 +157,12 @@ async function handleTokenCheckModal(interaction) {
                 }).catch(() => null);
             }
         });
-        const embed = buildBatchSummaryEmbed(batchData);
-        const attachments = createCategoryAttachments(batchData.groups);
-
-        const replyPayload = { content: null, embeds: [embed] };
-        if (attachments.length > 0) {
-            replyPayload.files = attachments;
-        }
-
-        return await interaction.editReply(replyPayload);
+        const embed = tokenChecker.buildBatchSummaryEmbed(batchData);
+        return await interaction.editReply({ content: null, embeds: [embed] });
     } catch (error) {
+        console.error('[TOKEN-CHECK] Verification failed:', error?.message || error);
         return await interaction.editReply({
-            content: `${config.emojis?.error || '❌'} เกิดข้อผิดพลาดระหว่างการตรวจสอบ: ${error.message || 'Unknown Error'}`
+            content: `${config.emojis?.error || '❌'} ตรวจสอบ Token ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง`
         });
     }
 }

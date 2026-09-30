@@ -576,7 +576,7 @@ function buildBatchSummaryEmbed(batchData) {
     // Show up to 15 items in embed
     const previewList = results.slice(0, 15).map((item, idx) => formatBatchItemLine(item, idx + 1));
     if (results.length > 15) {
-        previewList.push(`... และอีก ${results.length - 15} Token (ดูรายละเอียดเต็มในไฟล์แนบด้านล่าง)`);
+        previewList.push(`... และอีก ${results.length - 15} Token`);
     }
 
     const embed = new MessageEmbed()
@@ -603,7 +603,7 @@ function createCategoryAttachments(groups) {
     for (const { key, fileName } of fileMap) {
         const items = groups[key] || [];
         if (items.length > 0) {
-            const content = items.map(item => item.token).join('\n');
+            const content = items.map(item => item.maskedToken || maskToken(item.token || '')).join('\n');
             attachments.push(new AttachmentBuilder(Buffer.from(content, 'utf8'), { name: fileName }));
         }
     }

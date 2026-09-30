@@ -196,7 +196,7 @@ function successReply(interaction, input, result) {
     return interaction.editReply({
         content: result.caseCompleted
             ? null
-            : `> ${config.emojis.warning} ดำเนินการกับสมาชิกแล้ว แต่ฐานข้อมูลยังคง Case #${result.caseDoc.caseNumber} เป็น pending เพื่อให้ตรวจสอบภายหลัง`,
+            : `> ${config.emojis.warning} ดำเนินการกับสมาชิกเรียบร้อย แต่บันทึกประวัติไม่สมบูรณ์`,
         embeds: [replyEmbed]
     });
 }

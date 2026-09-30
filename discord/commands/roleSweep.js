@@ -553,7 +553,6 @@ function registerPendingPreview({ guild, guildId, channel, actorId, exceptRoleId
         expired.previewMessage?.edit?.({ components: [] }).catch(() => {});
         Promise.resolve(
             expired.respond({
-                content: `> ${config.emojis?.warning || "⚠️"} คำขอถอดยศหมดเวลายืนยันแล้ว`,
                 embeds: [buildExpiredEmbed(guild)],
                 components: []
             })
@@ -683,18 +682,6 @@ async function executeSweep(pending, messageOrInteraction) {
         }
 
         const cancelled = controller.cancelled;
-        const formattedPendingExcept = pending.exceptRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
-        const exemptTagLine = pending.exceptRoleIds?.length > 0
-            ? `\n> ยศที่เว้นไว้: ${formattedPendingExcept}`
-            : "";
-        const targetLine = pending.targetRoleId ? `\n> ยศเป้าหมาย: <@&${pending.targetRoleId}>` : "";
-        const statusEmoji = cancelled ? (config.emojis?.warning || "⚠️") : (config.emojis?.success || "✅");
-
-        const summaryContent = `> ${statusEmoji} ${cancelled ? "หยุดการถอดยศแล้ว" : "ถอดยศเสร็จแล้ว"}\n` +
-            `> สมาชิกที่เปลี่ยนแปลง: **${changedMembers}**\n` +
-            `> ยศที่ถอดสำเร็จ: **${removedAssignments}**\n` +
-            `> ยศที่ถอดไม่สำเร็จ: **${failedAssignments}**${exemptTagLine}${targetLine}`;
-
         const summaryEmbed = buildSummaryEmbed(pending.guild, {
             changedMembers,
             removedAssignments,
@@ -707,7 +694,7 @@ async function executeSweep(pending, messageOrInteraction) {
 
         return await deliverSweepResult(
             messageOrInteraction,
-            { content: summaryContent, embeds: [summaryEmbed], components: [] }
+            { content: null, embeds: [summaryEmbed], components: [] }
         );
     } finally {
         if (activeByGuild.get(pending.guildId) === controller) activeByGuild.delete(pending.guildId);
@@ -726,7 +713,6 @@ async function handleConfirmation(message) {
         if (clearPending(pending.guildId, pending)) {
             pending.previewMessage?.edit?.({ components: [] }).catch(() => {});
             await replyMessage(message, {
-                content: `> ${config.emojis?.warning || "⚠️"} คำขอถอดยศหมดเวลายืนยันแล้ว`,
                 embeds: [buildExpiredEmbed(pending.guild)],
                 components: []
             });
@@ -910,7 +896,6 @@ async function handleRoleSweepButton(interaction) {
 
     if (!pending) {
         return interaction.reply({
-            content: `> ${config.emojis?.warning || "⚠️"} ไม่พบงานถอดยศที่รอยืนยัน หรือคำขอนี้หมดอายุแล้ว`,
             embeds: [buildExpiredEmbed(interaction.guild)],
             ephemeral: true
         }).catch(() => null);
@@ -927,7 +912,7 @@ async function handleRoleSweepButton(interaction) {
         clearPending(guildId, pending);
         const cancelEmbed = buildCancelEmbed(interaction.guild, interaction.user.id);
         return interaction.update({
-            content: `> ${config.emojis?.warning || "⚠️"} ยกเลิกการถอดยศแล้ว`,
+            content: null,
             embeds: [cancelEmbed],
             components: []
         }).catch(() => null);
@@ -937,7 +922,7 @@ async function handleRoleSweepButton(interaction) {
         if (Date.now() >= pending.expiresAt) {
             clearPending(guildId, pending);
             return interaction.update({
-                content: `> ${config.emojis?.warning || "⚠️"} คำขอถอดยศหมดเวลายืนยันแล้ว`,
+                content: null,
                 embeds: [buildExpiredEmbed(interaction.guild)],
                 components: []
             }).catch(() => null);

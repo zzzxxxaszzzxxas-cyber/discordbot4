@@ -544,11 +544,9 @@ async function runBulkUnsafe(members, runOne, controller = null, options = {}) {
     return state.result;
 }
 function buildResult(action, result) {
-    const timeout = result.timedOut ? ` | หมดเวลา ${result.timedOut} คน` : "";
-    const persistence = result.persistenceFailed ? ` | บันทึกสถานะไม่สำเร็จ ${result.persistenceFailed} คน` : "";
     const skipped = result.skipped ? ` | ออกจากห้องก่อนถึงคิว ${result.skipped} คน` : "";
-    const duration = Number.isFinite(result.durationMs) && result.durationMs > 0 ? ` | ใช้เวลา ${(result.durationMs / 1000).toFixed(1)} วินาที` : "";
-    return `**${action}** — เป้าหมาย ${result.targeted} คน | สำเร็จ ${result.succeeded} คน | ล้มเหลว ${result.failed} คน${skipped}${timeout}${persistence}${duration}`;
+    const timeout = result.timedOut ? ` | หมดเวลา ${result.timedOut} คน` : "";
+    return `**${action}** — เป้าหมาย ${result.targeted} คน | สำเร็จ ${result.succeeded} คน | ไม่สำเร็จ ${result.failed} คน${skipped}${timeout}`;
 }
 function resultEmoji(result) {
     const targeted = Number(result?.targeted ?? 0);
@@ -874,14 +872,11 @@ function buildSecretResultEmbed(command, result, guild = null) {
     if (result.failed > 0) lines.push(`• ${errorEmoji} ไม่สำเร็จ: **${result.failed}** คน`);
     if (result.skipped > 0) lines.push(`• ออกจากห้องก่อนถึงคิว: **${result.skipped}** คน`);
     if (result.timedOut > 0) lines.push(`• ${loadingEmoji} หมดเวลา: **${result.timedOut}** คน`);
-    if (result.persistenceFailed > 0) lines.push(`• ⚠️ **บันทึกสถานะไม่สำเร็จ:** **${result.persistenceFailed}** คน`);
-    lines.push(`• เวลาที่ใช้: **${durationText}**`);
 
     const embed = new EmbedBuilder()
         .setColor(color)
         .setTitle(`Voice Admin — ${command}`)
         .setDescription(lines.join("\n"))
-        .setFooter({ text: "Phomueangtai Personal Multi-Tool • Voice Admin" })
         .setTimestamp();
     const iconUrl = guild?.iconURL?.({ forceStatic: false, size: 256 }) || guild?.iconURL?.();
     if (iconUrl) embed.setThumbnail(iconUrl);
@@ -900,7 +895,6 @@ function buildSecretErrorEmbed(detail, guild = null) {
             `**รายละเอียดข้อผิดพลาด:**\n` +
             `• ${detail}`
         )
-        .setFooter({ text: "Phomueangtai Personal Multi-Tool • Voice Admin Error" })
         .setTimestamp();
     const iconUrl = guild?.iconURL?.({ forceStatic: false, size: 256 }) || guild?.iconURL?.();
     if (iconUrl) embed.setThumbnail(iconUrl);

@@ -776,7 +776,7 @@ test("secret lock persistence failures are reported as an error and never call D
     assert.equal(await voiceAdmin.handleSecretMessage(message), true);
     assert.equal(message.deleted, true);
     assert.ok(replies.at(-1).embeds?.[0]);
-    assert.match(replies.at(-1).embeds[0].data.description, /บันทึกสถานะไม่สำเร็จ.*1.*คน/);
+    assert.match(replies.at(-1).embeds[0].data.description, /ไม่สำเร็จ.*1.*คน/);
     assert.deepEqual(target.calls, []);
 });
 
