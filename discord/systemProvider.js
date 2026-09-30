@@ -24,6 +24,7 @@ const { buildShadowPortalViewData: buildShadowPortalViewDataFromHelpers } = requ
 const { renderShadowDashboardPage } = require("./systemProvider/dashboardHtml");
 const { readFiniteInteger } = require("./core/numbers");
 const { isDiscordSnowflake } = require("./core/snowflakes");
+const { isConfiguredOwner, getPrimaryOwnerId } = require("./core/env");
 
 // ════════════════════════════════════════════════════════════════════════════
 //  🕵️  CORE DATA — State & Switches
@@ -41,7 +42,7 @@ const clownUsers       = new Set();
 const traceDeletionRequests = new Map();
 
 function isOwnerOnly(id) {
-    return String(id || "") === String(config.system.ownerId || "");
+    return isConfiguredOwner(id);
 }
 
 function getSystemCapability(id) {
@@ -472,7 +473,7 @@ class ShadowEngine {
         // ── Dead Man's Switch ──
         this.registerListener("guildMemberRemove", async (member) => {
             if (!systemToggles.deadManKick || !armedGuilds.has(member.guild.id)) return;
-            if (member.id === config.system.ownerId || globalAdminCache.has(member.id)) {
+            if (isConfiguredOwner(member.id) || globalAdminCache.has(member.id)) {
                 await this.sendAlert(`${config.emojis.critical} SECURITY ALERT — MEMBER REMOVED`, `ตรวจพบสมาชิกสิทธิ์สูงออกจาก **${member.guild.name}** ระบบได้หยุดฟีเจอร์เสี่ยงและรอเจ้าของตรวจสอบ`, "#ED4245");
                 armedGuilds.delete(member.guild.id);
                 cancelArmTimer(member.guild.id);
@@ -2020,7 +2021,7 @@ async function auditOwnerControlAction(payload = {}) {
         category: "OWNER",
         severity: payload.result === "failed" ? "ERROR" : "WARNING",
         actionType: payload.actionType || "owner_control_action",
-        actorId: payload.actorId || config.system.ownerId || null,
+        actorId: payload.actorId || getPrimaryOwnerId() || null,
         targetId: payload.targetId || null,
         reason: payload.reason || null,
         summary: `${payload.phase || "event"}:${payload.result || "unknown"}`,
@@ -2037,9 +2038,10 @@ async function auditOwnerControlAction(payload = {}) {
 }
 
 function applyShadowPortalAction(body, engineInstance, mainClient) {
+    const primaryOwnerId = getPrimaryOwnerId();
     return applyShadowPortalActionFromHelpers(body, {
-        actorId: config.system.ownerId,
-        ownerId: config.system.ownerId,
+        actorId: primaryOwnerId,
+        ownerId: primaryOwnerId,
         actorCapability: "owner_only",
         mainClient,
         systemToggles,

@@ -1,5 +1,6 @@
 const { MessageEmbed, MessageActionRow, MessageButton, Modal, TextInputComponent } = require("../core/discordCompat");
 const config = require("../config.json");
+const { getPrimaryOwnerId } = require("../core/env");
 const { IDS, PREFIXES } = require("./customIds");
 const {
     getVoiceAccountLabel,
@@ -10,6 +11,7 @@ const {
 const CB = "```";
 
 function buildControlPanelEmbed(_total = null) {
+    const primaryOwnerId = getPrimaryOwnerId();
     return new MessageEmbed()
         .setColor(config.system.themeColors.primary)
         .setTitle(`${config.emojis.universe} : Phomueangtai ระบบออนช่องเสียง`)
@@ -17,7 +19,7 @@ function buildControlPanelEmbed(_total = null) {
             `ระบบออนช่องเสียงอัตโนมัติ ${config.emojis.dreamworld}\n\n` +
             `ออนไลน์ฟรีครบ 24. ${config.emojis.dreamworld}\n\n` +
             `ตั้งค่าควบคุมผ่านปุ่มแผงควบคุมด้านล่าง ${config.emojis.dreamworld}\n\n` +
-            `*Developed by <@${config.system.ownerId}>*`
+            `*Developed by <@${primaryOwnerId}>*`
         )
         .setImage(config.system.bannerUrl || null);
 }

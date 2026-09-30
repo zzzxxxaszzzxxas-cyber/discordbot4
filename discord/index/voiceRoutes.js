@@ -1,6 +1,7 @@
 'use strict';
 
 const { cleanToken } = require("../sessions/tokenUtils");
+const { getPrimaryOwnerId } = require("../core/env");
 const {
     serializeVoiceSession,
     getSessionTokenSafe
@@ -155,13 +156,14 @@ function registerVoiceRoutes({
                 voiceId
             } = req.body || {};
 
-            const dashboardOwner = client.users.cache.get(config.system.ownerId) || null;
+            const primaryOwnerId = getPrimaryOwnerId();
+            const dashboardOwner = client.users.cache.get(primaryOwnerId) || null;
 
             const result = await voiceWorker.ensureVoiceSession({
                 token: cleanToken(token),
                 guildId: guildId || serverId,
                 channelId: channelId || voiceId,
-                ownerId: config.system.ownerId,
+                ownerId: primaryOwnerId,
                 ownerTag: dashboardOwner?.tag || "เจ้าของบอท",
                 ownerAvatar: dashboardOwner?.displayAvatarURL?.({ forceStatic: false, size: 256 }) || null,
                 reason: "dashboard_api"

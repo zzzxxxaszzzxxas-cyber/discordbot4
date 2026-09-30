@@ -7,6 +7,7 @@ const jestMock = require("jest-mock");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const SETUP_FILE = __filename;
+process.env.OWNER_ID = process.env.OWNER_ID || "661415152146710558";
 const activeSpies = new Set();
 const STRING_FORMAT_TOKENS = new Set(["%s"]);
 

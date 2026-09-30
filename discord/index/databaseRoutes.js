@@ -1,13 +1,14 @@
 'use strict';
 
 const databaseService = require("../../database/services/databaseService");
+const { getPrimaryOwnerId } = require("../core/env");
 
 function resolveActor(req) {
     if (!req) return "owner:dashboard";
     if (req.user?.id) return `owner:${req.user.id}`;
     if (req.session?.ownerId) return `owner:${req.session.ownerId}`;
     if (req.session?.user?.id) return `owner:${req.session.user.id}`;
-    const primaryOwner = (process.env.OWNER_ID || "").split(",")[0]?.trim();
+    const primaryOwner = getPrimaryOwnerId();
     if (primaryOwner) return `owner:${primaryOwner}`;
     return "owner:dashboard";
 }
