@@ -18,6 +18,7 @@ const {
 } = require('./questSession');
 const { encryptToken, maskToken } = require('./tokenCrypto');
 const tokenCoordinator = require('../../core/tokenCoordinator');
+const config = require('../../config.json');
 
 try {
     tokenCoordinator.registerSubsystem({
@@ -1080,7 +1081,7 @@ async function startUserQuestSession({
             severity: 'INFO',
             category: 'COMMAND',
             code: 'quest.session.started',
-            title: '🚀 มีการเริ่มระบบทำ Quest อัตโนมัติ',
+            title: `${config.emojis?.boost || '🚀'} มีการเริ่มระบบทำ Quest อัตโนมัติ`,
             description: `ผู้ใช้ <@${invokerId}> ได้ส่งคำขอทำ Discord Quest (โหมด: ${mode})`,
             context: {
                 'ผู้สั่งการ': `${invokerTag} (${invokerId})`,
@@ -1098,7 +1099,7 @@ async function startUserQuestSession({
                 try {
                     me = await fetchMe(token);
                 } catch (authErr) {
-                    results.push({ started: false, line: `❌ Token ลำดับที่ ${i + 1} ไม่ถูกต้องหรือหมดอายุ` });
+                    results.push({ started: false, line: `${config.emojis?.red_card || config.emojis?.error || '❌'} Token ลำดับที่ ${i + 1} ไม่ถูกต้องหรือหมดอายุ` });
                     continue;
                 }
 
@@ -1107,7 +1108,7 @@ async function startUserQuestSession({
 
                 await withAccountAdmissionLock(accountId, async () => {
                     if (findAnyJobByAccount(accountId)) {
-                        results.push({ started: false, line: `⚠️ **${username}** มี Runner ทำงานอยู่แล้วในระบบ` });
+                        results.push({ started: false, line: `${config.emojis?.warning || '⚠️'} **${username}** มี Runner ทำงานอยู่แล้วในระบบ` });
                         return;
                     }
 
@@ -1145,11 +1146,11 @@ async function startUserQuestSession({
                         username,
                         line: mode === 'scheduled'
                             ? `🤖 เริ่มระบบอัตโนมัติรายวัน: **${username}**\n   ตรวจทันที และตรวจประจำเวลา **00:00 / 08:00 / 16:00 น.**`
-                            : `✅ เริ่ม Quest auto : **${username}**`
+                            : `${config.emojis?.check_alt || config.emojis?.success || '✅'} เริ่ม Quest auto : **${username}**`
                     });
                 });
             } catch (err) {
-                results.push({ started: false, line: `❌ บัญชีลำดับที่ ${i + 1} ไม่สำเร็จ: ${err.message}` });
+                results.push({ started: false, line: `${config.emojis?.red_card || config.emojis?.error || '❌'} บัญชีลำดับที่ ${i + 1} ไม่สำเร็จ: ${err.message}` });
             }
         }
 

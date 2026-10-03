@@ -543,7 +543,7 @@ test('questDm buildQuestStoppedEmbed creates danger embed with abort reason', ()
     });
 
     assert.ok(embed);
-    assert.equal(embed.data.title, '🛑 สั่งหยุดการทำงานของ Quest แล้ว');
+    assert.match(embed.data.title, /สั่งหยุดการทำงานของ Quest แล้ว/);
     assert.equal(embed.data.color, parseInt('ED4245', 16));
     assert.ok(embed.data.fields.some((f) => f.name.includes('บัญชีที่หยุดทำงาน') && f.value.includes('OperatorUser')));
     assert.ok(embed.data.fields.some((f) => f.name.includes('เหตุผลที่หยุด') && f.value.includes('/quest panel')));

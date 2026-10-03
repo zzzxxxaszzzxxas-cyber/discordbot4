@@ -20,6 +20,7 @@ const { MessageEmbed } = require("../../core/discordCompat");
 const { encryptToken, decryptToken } = require("./crypto");
 const { sanitizeLogText } = require("./safeLogger");
 const dmService = require("../../dm");
+const config = require("../../config.json");
 const { readFiniteInteger } = require("../../core/numbers");
 
 const BASE = "https://discord.com/api/v10";
@@ -1235,7 +1236,7 @@ async function sendDM(userId, payload) {
 function verificationDmCopy({ ok, blocked, alreadyVerified, reasonCode }) {
     if (alreadyVerified) {
         return {
-            title: "✨ ยืนยันตัวตนไว้แล้ว",
+            title: `${config.emojis?.universe || "✨"} ยืนยันตัวตนไว้แล้ว`,
             summary: "บัญชีของคุณพร้อมใช้งานอยู่แล้ว ระบบจึงไม่ได้เพิ่มยศซ้ำ",
             tone: "info",
             showReason: false,
@@ -1244,7 +1245,7 @@ function verificationDmCopy({ ok, blocked, alreadyVerified, reasonCode }) {
     }
     if (ok) {
         return {
-            title: "✅ ยืนยันตัวตนสำเร็จ",
+            title: `${config.emojis?.check_alt || config.emojis?.success || "✅"} ยืนยันตัวตนสำเร็จ`,
             summary: "คุณผ่านการตรวจสอบและพร้อมใช้งานเซิร์ฟเวอร์แล้ว",
             tone: "success",
             showReason: false,
@@ -1253,7 +1254,7 @@ function verificationDmCopy({ ok, blocked, alreadyVerified, reasonCode }) {
     }
     if (blocked) {
         return {
-            title: "🛡️ ยังไม่ผ่านการยืนยัน",
+            title: `${config.emojis?.shield || "🛡️"} ยังไม่ผ่านการยืนยัน`,
             summary: "บัญชีนี้ยังไม่ผ่านเงื่อนไขที่เซิร์ฟเวอร์ตั้งไว้",
             nextAction: "ติดต่อผู้ดูแลเซิร์ฟเวอร์หากต้องการสอบถามเงื่อนไขเพิ่มเติม",
             tone: "warning",
@@ -1262,7 +1263,7 @@ function verificationDmCopy({ ok, blocked, alreadyVerified, reasonCode }) {
     }
     const stalePanel = reasonCode === "panel_revision_mismatch" || reasonCode === "role_mismatch_latest_config";
     return {
-        title: "⚠️ ยืนยันตัวตนไม่สำเร็จ",
+        title: `${config.emojis?.warning || "⚠️"} ยืนยันตัวตนไม่สำเร็จ`,
         summary: "ระบบยังดำเนินการยืนยันให้เสร็จสมบูรณ์ไม่ได้",
         nextAction: stalePanel
             ? "กลับไป Discord แล้วกดปุ่มจากแผงยืนยันล่าสุด"

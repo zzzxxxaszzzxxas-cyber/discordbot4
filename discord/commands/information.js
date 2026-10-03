@@ -675,7 +675,7 @@ function highestRoleLabel(member) {
 function memberBoostDetail(member) {
     if (!member?.premiumSinceTimestamp) return "ไม่ได้ Boost เซิร์ฟเวอร์นี้";
     const days = Math.max(0, Math.floor((Date.now() - member.premiumSinceTimestamp) / 86400000));
-    return `กำลัง Boost เซิร์ฟเวอร์นี้ 🚀 (นาน **${formatCount(days)} วัน** • ตั้งแต่ ${discordTimestamp(member.premiumSinceTimestamp, "R")})`;
+    return `กำลัง Boost เซิร์ฟเวอร์นี้ ${config.emojis?.boost || "🚀"} (นาน **${formatCount(days)} วัน** • ตั้งแต่ ${discordTimestamp(member.premiumSinceTimestamp, "R")})`;
 }
 
 function memberState(member) {
@@ -805,7 +805,7 @@ function buildUserInfoEmbed(interaction, user, member) {
 
     const embed = new MessageEmbed()
         .setColor(age.color)
-        .setTitle(`👤 ข้อมูลสมาชิก • ${safeText(displayName, "ไม่ทราบชื่อ", 180)}`)
+        .setTitle(`${config.emojis?.user || "👤"} ข้อมูลสมาชิก • ${safeText(displayName, "ไม่ทราบชื่อ", 180)}`)
         .setDescription(`${profileIcon} **${markdownText(displayName, "ไม่ทราบชื่อ", 100)}** • ${markdownText(tag, "ไม่ทราบ", 100)}\n${userMention}`)
         .addFields(
             buildUserAccountDetailsField(user, age),

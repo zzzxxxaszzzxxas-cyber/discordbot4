@@ -600,13 +600,13 @@ function buildPanel(channel, status = null) {
     if (iconUrl) embed.setThumbnail(iconUrl);
     const actions = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(IDS.DISCONNECT).setLabel("ตัดสายทั้งหมด").setEmoji(config.emojis?.voice_leave || "🚪").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(IDS.LOCK_MUTE).setLabel("ปิดไมค์").setEmoji("🔇").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(IDS.LOCK_MUTE).setLabel("ปิดไมค์").setEmoji(config.emojis?.voice_leave || "🔇").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(IDS.LOCK_DEAF).setLabel("ปิดหู").setEmoji("🎧").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(IDS.UNLOCK_MUTE).setLabel("เปิดไมค์").setEmoji("🎙️").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(IDS.UNLOCK_DEAF).setLabel("เปิดหู").setEmoji("🔊").setStyle(ButtonStyle.Success)
+        new ButtonBuilder().setCustomId(IDS.UNLOCK_DEAF).setLabel("เปิดหู").setEmoji(config.emojis?.voice_ch || "🔊").setStyle(ButtonStyle.Success)
     );
     const move = new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(IDS.MOVE).setPlaceholder("เลือกห้องเสียงปลายทางเพื่อย้ายสมาชิก").setChannelTypes(ChannelType.GuildVoice).setMinValues(1).setMaxValues(1));
-    const refresh = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(IDS.REFRESH).setLabel("รีเฟรช").setEmoji("🔄").setStyle(ButtonStyle.Primary));
+    const refresh = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(IDS.REFRESH).setLabel("รีเฟรช").setEmoji(config.emojis?.loading_circle || config.emojis?.loading || "🔄").setStyle(ButtonStyle.Primary));
     return { embeds: [embed], components: [actions, move, refresh] };
 }
 function verifyVoiceAdminAccess(actor, channel) {

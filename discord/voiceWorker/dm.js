@@ -1,25 +1,26 @@
 "use strict";
 
+const config = require("../config.json");
 const { getSessionShortId } = require("./session");
 const { sanitizeLogText } = require("../core/safeLogger");
 const dmService = require("../dm");
 const { buildDmEmbed, profileFromUser, safeText, markdownText, code } = dmService.design;
 
 const EVENT_VIEW = Object.freeze({
-    VOICE_DISCONNECTED: { color: "#FFA500", title: "⚠️ การเชื่อมต่อช่องเสียงหลุด", status: "🟠 กำลังเริ่มกู้คืนอัตโนมัติ" },
-    SESSION_READY: { color: "#57F287", title: "✅ เริ่มออนช่องเสียงแล้ว", status: "🟢 ออนไลน์ในช่องเป้าหมาย" },
-    RECOVERY_DELAYED: { color: "#FEE75C", title: "🛠️ กำลังกู้คืนช่องเสียง", status: "🟠 การเชื่อมต่อยังไม่กลับมาปกติ" },
-    SESSION_RECOVERED: { color: "#57F287", title: "✅ กลับมาออนช่องเสียงแล้ว", status: "🟢 ยืนยันแล้วว่าออนไลน์ในช่องเป้าหมาย" },
-    RECOVERY_EXHAUSTED: { color: "#ED4245", title: "⛔ กู้คืนไม่สำเร็จ", status: "⚫ หยุดแล้วหลังลองเชื่อมต่อครบกำหนด" },
-    TOKEN_INVALID: { color: "#ED4245", title: "🚫 Token ใช้งานไม่ได้", status: "🔴 เข้าสู่ระบบบัญชีไม่ได้" },
-    LOGIN_FAILED: { color: "#ED4245", title: "❌ เข้าสู่ระบบไม่สำเร็จ", status: "🔴 ยังไม่ได้ออนช่องเสียง" },
-    GUILD_NOT_FOUND: { color: "#ED4245", title: "🏠 ไม่พบเซิร์ฟเวอร์", status: "🔴 ยังไม่ได้ออนช่องเสียง" },
-    CHANNEL_NOT_FOUND: { color: "#ED4245", title: "🔊 ไม่พบช่องเสียง", status: "🔴 ยังไม่ได้ออนช่องเสียง" },
-    VOICE_PERMISSION_DENIED: { color: "#ED4245", title: "🔒 เข้าช่องเสียงไม่ได้", status: "🔴 สิทธิ์ไม่เพียงพอ" },
-    VOICE_CONNECTION_FAILED: { color: "#ED4245", title: "📡 เชื่อมต่อช่องเสียงไม่สำเร็จ", status: "🔴 ยังยืนยันการออนไลน์ไม่ได้" },
-    SESSION_STOPPED_IDLE: { color: "#FEE75C", title: "💤 หยุดการออนที่ไม่มีการใช้งาน", status: "⚫ หยุดแล้ว" },
-    SESSION_STOPPED_MANUAL: { color: "#5865F2", title: "🛑 หยุดออนช่องเสียงแล้ว", status: "⚫ หยุดแล้วตามคำสั่ง" },
-    STOP_FAILED: { color: "#ED4245", title: "⚠️ หยุด Session ไม่สมบูรณ์", status: "🔴 อาจยังค้างอยู่ในช่องเสียง" }
+    VOICE_DISCONNECTED: { color: "#FFA500", title: `${config.emojis?.alert || config.emojis?.warning || "⚠️"} การเชื่อมต่อช่องเสียงหลุด`, status: "🟠 กำลังเริ่มกู้คืนอัตโนมัติ" },
+    SESSION_READY: { color: "#57F287", title: `${config.emojis?.check_alt || config.emojis?.success || "✅"} เริ่มออนช่องเสียงแล้ว`, status: `${config.emojis?.status_online || config.emojis?.armed_on || "🟢"} ออนไลน์ในช่องเป้าหมาย` },
+    RECOVERY_DELAYED: { color: "#FEE75C", title: `${config.emojis?.alarm || config.emojis?.warning || "⚠️"} กำลังกู้คืนช่องเสียง`, status: "🟠 การเชื่อมต่อยังไม่กลับมาปกติ" },
+    SESSION_RECOVERED: { color: "#57F287", title: `${config.emojis?.check_alt || config.emojis?.success || "✅"} กลับมาออนช่องเสียงแล้ว`, status: `${config.emojis?.status_online || config.emojis?.armed_on || "🟢"} ยืนยันแล้วว่าออนไลน์ในช่องเป้าหมาย` },
+    RECOVERY_EXHAUSTED: { color: "#ED4245", title: `${config.emojis?.no_entry || "⛔"} กู้คืนไม่สำเร็จ`, status: "⚫ หยุดแล้วหลังลองเชื่อมต่อครบกำหนด" },
+    TOKEN_INVALID: { color: "#ED4245", title: `${config.emojis?.red_card || config.emojis?.error || "🚫"} Token ใช้งานไม่ได้`, status: `${config.emojis?.status_offline || config.emojis?.armed_off || "🔴"} เข้าสู่ระบบบัญชีไม่ได้` },
+    LOGIN_FAILED: { color: "#ED4245", title: `${config.emojis?.red_card || config.emojis?.error || "❌"} เข้าสู่ระบบไม่สำเร็จ`, status: `${config.emojis?.status_offline || config.emojis?.armed_off || "🔴"} ยังไม่ได้ออนช่องเสียง` },
+    GUILD_NOT_FOUND: { color: "#ED4245", title: `${config.emojis?.server_icon || "🏠"} ไม่พบเซิร์ฟเวอร์`, status: `${config.emojis?.status_offline || config.emojis?.armed_off || "🔴"} ยังไม่ได้ออนช่องเสียง` },
+    CHANNEL_NOT_FOUND: { color: "#ED4245", title: `${config.emojis?.voice_ch || "🔊"} ไม่พบช่องเสียง`, status: `${config.emojis?.status_offline || config.emojis?.armed_off || "🔴"} ยังไม่ได้ออนช่องเสียง` },
+    VOICE_PERMISSION_DENIED: { color: "#ED4245", title: `${config.emojis?.lock || "🔒"} เข้าช่องเสียงไม่ได้`, status: `${config.emojis?.status_offline || config.emojis?.armed_off || "🔴"} สิทธิ์ไม่เพียงพอ` },
+    VOICE_CONNECTION_FAILED: { color: "#ED4245", title: `${config.emojis?.critical || config.emojis?.error || "📡"} เชื่อมต่อช่องเสียงไม่สำเร็จ`, status: `${config.emojis?.status_offline || config.emojis?.armed_off || "🔴"} ยังยืนยันการออนไลน์ไม่ได้` },
+    SESSION_STOPPED_IDLE: { color: "#FEE75C", title: `${config.emojis?.disable || "💤"} หยุดการออนที่ไม่มีการใช้งาน`, status: "⚫ หยุดแล้ว" },
+    SESSION_STOPPED_MANUAL: { color: "#5865F2", title: `${config.emojis?.stop || "🛑"} หยุดออนช่องเสียงแล้ว`, status: "⚫ หยุดแล้วตามคำสั่ง" },
+    STOP_FAILED: { color: "#ED4245", title: `${config.emojis?.warning || "⚠️"} หยุด Session ไม่สมบูรณ์`, status: `${config.emojis?.status_offline || config.emojis?.armed_off || "🔴"} อาจยังค้างอยู่ในช่องเสียง` }
 });
 
 const EVENT_COPY = Object.freeze({
@@ -185,7 +186,9 @@ function buildVoiceEventEmbed(snapshot, profile = null) {
     }
     if (snapshot.onlineDurationMs > 0) {
         fields.push({
-            name: snapshot.type === "VOICE_DISCONNECTED" ? "🟢 ออนไลน์ต่อเนื่องก่อนหลุด" : "🟢 ออนไลน์ต่อเนื่องก่อนเหตุการณ์",
+            name: snapshot.type === "VOICE_DISCONNECTED"
+                ? `${config.emojis?.status_online || config.emojis?.armed_on || "🟢"} ออนไลน์ต่อเนื่องก่อนหลุด`
+                : `${config.emojis?.status_online || config.emojis?.armed_on || "🟢"} ออนไลน์ต่อเนื่องก่อนเหตุการณ์`,
             value: duration(snapshot.onlineDurationMs),
             inline: true
         });
@@ -290,15 +293,15 @@ function sendSessionOnlineDM(sessionId) {
 const TRACKER_PHASE_VIEW = Object.freeze({
     starting: {
         tone: "warning",
-        title: "🔄 กำลังกู้คืนช่องเสียงแบบเรียลไทม์",
+        title: `${config.emojis?.loading_circle || config.emojis?.loading || "🔄"} กำลังกู้คืนช่องเสียงแบบเรียลไทม์`,
         summary: "ระบบกำลังดำเนินการกู้คืนการเชื่อมต่อให้อัตโนมัติ ข้อความนี้จะอัปเดตสถานะแบบเรียลไทม์",
-        defaultStatus: "🔄 เริ่มกระบวนการกู้คืนและตรวจสอบช่องเสียง..."
+        defaultStatus: `${config.emojis?.loading_circle || config.emojis?.loading || "🔄"} เริ่มกระบวนการกู้คืนและตรวจสอบช่องเสียง...`
     },
     attempt: {
         tone: "warning",
-        title: "🔄 กำลังกู้คืนช่องเสียงแบบเรียลไทม์",
+        title: `${config.emojis?.loading_circle || config.emojis?.loading || "🔄"} กำลังกู้คืนช่องเสียงแบบเรียลไทม์`,
         summary: "ระบบกำลังดำเนินการกู้คืนการเชื่อมต่อให้อัตโนมัติ ข้อความนี้จะอัปเดตสถานะแบบเรียลไทม์",
-        defaultStatus: "🔄 กำลังลองเชื่อมต่อเข้าสู่ช่องเสียง..."
+        defaultStatus: `${config.emojis?.loading_circle || config.emojis?.loading || "🔄"} กำลังลองเชื่อมต่อเข้าสู่ช่องเสียง...`
     },
     hibernate: {
         tone: "warning",
@@ -308,19 +311,19 @@ const TRACKER_PHASE_VIEW = Object.freeze({
     },
     recovered: {
         tone: "success",
-        title: "✅ กู้คืนการเชื่อมต่อสำเร็จเรียบร้อย",
+        title: `${config.emojis?.check_alt || config.emojis?.success || "✅"} กู้คืนการเชื่อมต่อสำเร็จเรียบร้อย`,
         summary: "ระบบกู้คืนการเชื่อมต่อช่องเสียงสำเร็จ และตรวจสอบยืนยันสถานะการออนไลน์ในห้องเสียงเรียบร้อยแล้ว",
-        defaultStatus: "🟢 ยืนยันแล้วว่าออนไลน์ในช่องเป้าหมาย"
+        defaultStatus: `${config.emojis?.status_online || config.emojis?.armed_on || "🟢"} ยืนยันแล้วว่าออนไลน์ในช่องเป้าหมาย`
     },
     exhausted: {
         tone: "danger",
-        title: "⛔ กู้คืนไม่สำเร็จ (สิ้นสุดความพยายาม)",
+        title: `${config.emojis?.no_entry || "⛔"} กู้คืนไม่สำเร็จ (สิ้นสุดความพยายาม)`,
         summary: "ระบบลองกู้คืนครบตามจำนวนที่กำหนดแล้ว แต่ยังไม่สามารถเชื่อมต่อได้",
         defaultStatus: "⚫ หยุดแล้วหลังลองเชื่อมต่อครบกำหนด"
     },
     terminal: {
         tone: "danger",
-        title: "🛑 ยกเลิกการกู้คืนช่องเสียง",
+        title: `${config.emojis?.stop || "🛑"} ยกเลิกการกู้คืนช่องเสียง`,
         summary: "การกู้คืนช่องเสียงสิ้นสุดลงเนื่องจากเซสชันถูกสั่งหยุดหรือโทเคนหมดอายุ",
         defaultStatus: "⚫ การกู้คืนสิ้นสุดลง"
     }

@@ -38,8 +38,8 @@ async function sendMoveNotification(sessionId, deps = {}) {
         : `ตั้งแต่ ${firstTime} ถึง ${lastTime}`;
 
     const fields = [
-        { name: "🏠 เซิร์ฟเวอร์", value: `**${markdownText(record.guildName)}**\n${code(record.guildId)}`, inline: true },
-        { name: "🔊 ห้องเป้าหมาย", value: `**${markdownText(record.targetChannelName)}**\n${code(record.targetChannelId)}`, inline: true },
+        { name: `${config.emojis?.server_icon || "🏠"} เซิร์ฟเวอร์`, value: `**${markdownText(record.guildName)}**\n${code(record.guildId)}`, inline: true },
+        { name: `${config.emojis?.voice_ch || "🔊"} ห้องเป้าหมาย`, value: `**${markdownText(record.targetChannelName)}**\n${code(record.targetChannelId)}`, inline: true },
         { name: "📍 ห้องที่โดนลากไป (ล่าสุด)", value: `**${markdownText(record.lastMovedToChannelName)}**\n${code(record.lastMovedToChannelId)}`, inline: true },
         { name: "🔁 จำนวนครั้งที่โดนลาก", value: `**${record.moveCount}** ครั้ง`, inline: true },
         { name: "⏱️ เวลาที่เกิดเหตุ", value: timeRange, inline: true },

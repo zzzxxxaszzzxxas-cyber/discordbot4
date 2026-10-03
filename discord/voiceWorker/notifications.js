@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const config = require("../config.json");
 const sessionManager = require("../sessionManager");
 const dm = require("./dm");
 
@@ -554,7 +555,7 @@ function createVoiceNotificationSystem(options = {}) {
                     attempts: transition.previous.attempts,
                     maxAttempts: 15,
                     openedAt: tracker.openedAt,
-                    statusText: "🟢 กู้คืนการเชื่อมต่อสำเร็จ และยืนยันสถานะในช่องเสียงเรียบร้อยแล้ว"
+                    statusText: `${config.emojis?.status_online || config.emojis?.success || "🟢"} กู้คืนการเชื่อมต่อสำเร็จ และยืนยันสถานะในช่องเสียงเรียบร้อยแล้ว`
                 }).catch(() => {});
             }
         }
@@ -617,8 +618,8 @@ function createVoiceNotificationSystem(options = {}) {
                     maxAttempts: 15,
                     openedAt: tracker.openedAt,
                     statusText: isExhausted
-                        ? "⛔ สิ้นสุดความพยายาม (ลองกู้คืนครบกำหนดแล้ว)"
-                        : `🛑 การกู้คืนสิ้นสุดลง (${context.reason || type})`
+                        ? `${config.emojis?.no_entry || "⛔"} สิ้นสุดความพยายาม (ลองกู้คืนครบกำหนดแล้ว)`
+                        : `${config.emojis?.stop || config.emojis?.intrusion_icon || "🛑"} การกู้คืนสิ้นสุดลง (${context.reason || type})`
                 }).catch(() => {});
             }
         }
