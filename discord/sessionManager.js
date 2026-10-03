@@ -1,15 +1,12 @@
 /* eslint-disable complexity -- Session persistence compatibility is behavior-sensitive; refactor separately. */
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE & ARCHITECTURE GUARD] ⚠️
-ATTENTION AI ASSISTANT: DO NOT MODIFY, REFACTOR, OR SIMPLIFY THIS FILE.
-1. [DATABASE]: MONGO_URI is authoritative for sessions & identity; SQLite is local operational DB. Local JSON fallback is REMOVED.
-2. [ENCRYPTION]: AES-256-GCM with CBC fallback must remain intact.
-3. [POOL]: maxPoolSize: 20 MUST remain in mongoose.connect().
-4. [SCHEMAS]: Do NOT remove PanelStateModel or BotSettingsModel.
-5. [METRICS]: increment() calls must remain for Dashboard accuracy.
-================================================================================
-*/
+/**
+ * Voice Session & Settings Persistence Manager
+ * - Database Architecture: MONGO_URI is authoritative for sessions and identity; SQLite for operational cache.
+ * - Token Encryption: AES-256-GCM with legacy CBC fallback preserved.
+ * - Pool Sizing: maxPoolSize: 20 in mongoose.connect().
+ * - Models: PanelStateModel and BotSettingsModel schemas.
+ * - Metrics: System telemetry increment counters.
+ */
 
 const mongoose = require("mongoose");
 const crypto = require("node:crypto");

@@ -1920,7 +1920,7 @@ ${navBar("/approved")}
 function pageQuests() {
     return shell("บันทึก Quest", `
 <div class="container-lg">
-<h1 class="page-title gradient-text">🎯 บันทึกการทำ Quest (NeverDie Auto Quest)</h1>
+<h1 class="page-title gradient-text">🎯 บันทึกการทำ Quest อัตโนมัติ</h1>
 <p class="page-sub">ประวัติการใช้งานและรายละเอียดบัญชีที่ส่งทำเควสต์ผ่านพาเนล</p>
 ${navBar("/quests")}
 

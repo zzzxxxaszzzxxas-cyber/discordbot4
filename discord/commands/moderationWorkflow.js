@@ -25,7 +25,7 @@ async function requireModerationPermission(interaction, _action) {
 
 function rejectMissingTarget(interaction, target) {
     if (target) return null;
-    return interaction.reply({ content: `> ${config.emojis.error} ไม่พบสมาชิกเป้าหมายในเซิร์ฟเวอร์`, ephemeral: true });
+    return interaction.reply({ content: `> ${config.emojis?.error || "❌"} ไม่พบสมาชิกเป้าหมายในเซิร์ฟเวอร์`, ephemeral: true });
 }
 
 function rejectHierarchy(interaction, client, target) {
@@ -40,11 +40,11 @@ function rejectUnmanageableTarget(interaction, target, action) {
     // do not use `manageable` as the ban decision.
     if (action === "ban") {
         if (target.bannable === true) return null;
-        return interaction.reply({ content: `> ${config.emojis.error} บอทไม่สามารถแบนสมาชิกท่านนี้ได้`, ephemeral: true });
+        return interaction.reply({ content: `> ${config.emojis?.error || "❌"} บอทไม่สามารถแบนสมาชิกท่านนี้ได้`, ephemeral: true });
     }
 
     if (target.manageable) return null;
-    return interaction.reply({ content: `> ${config.emojis.error} บอทไม่มีสิทธิ์จัดการสมาชิกท่านนี้`, ephemeral: true });
+    return interaction.reply({ content: `> ${config.emojis?.error || "❌"} บอทไม่มีสิทธิ์จัดการสมาชิกท่านนี้`, ephemeral: true });
 }
 
 function rejectInvalidDuration(interaction, duration) {
@@ -196,7 +196,7 @@ function successReply(interaction, input, result) {
     return interaction.editReply({
         content: result.caseCompleted
             ? null
-            : `> ${config.emojis.warning} ดำเนินการกับสมาชิกเรียบร้อย แต่บันทึกประวัติไม่สมบูรณ์`,
+            : `> ${config.emojis?.warning || "⚠️"} ดำเนินการกับสมาชิกเรียบร้อย แต่บันทึกประวัติไม่สมบูรณ์`,
         embeds: [replyEmbed]
     });
 }
@@ -224,14 +224,14 @@ function failureReply(interaction, err) {
 }
 
 function resolveModerationLoadingText(input) {
-    if (input.action === "ban") return `${config.emojis.loading} กำลังแบนสมาชิก...`;
-    if (input.action === "kick") return `${config.emojis.loading} กำลังเตะสมาชิก...`;
+    if (input.action === "ban") return `${config.emojis?.loading || "⏳"} กำลังแบนสมาชิก...`;
+    if (input.action === "kick") return `${config.emojis?.loading || "⏳"} กำลังเตะสมาชิก...`;
     if (input.action === "timeout") {
         return input.duration?.isUntimeout || input.duration?.minutes === 0
-            ? `${config.emojis.loading} กำลังปลด Timeout...`
-            : `${config.emojis.loading} กำลังตั้ง Timeout...`;
+            ? `${config.emojis?.loading || "⏳"} กำลังปลด Timeout...`
+            : `${config.emojis?.loading || "⏳"} กำลังตั้ง Timeout...`;
     }
-    return `${config.emojis.loading} กำลังดำเนินการ...`;
+    return `${config.emojis?.loading || "⏳"} กำลังดำเนินการ...`;
 }
 
 function readFullModerationInput(interaction) {

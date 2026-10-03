@@ -555,7 +555,7 @@ async function handle(interaction, client) {
 
 async function validateSetupChannelAndRole(interaction, channel, role) {
     if (channel?.isTextBased?.() !== true || channel?.isSendable?.() !== true || channel?.isThread?.() === true) {
-        return { ok: false, error: `> ${config.emojis.error} กรุณาเลือกห้องข้อความเท่านั้น` };
+        return { ok: false, error: `> ${config.emojis?.error || "❌"} กรุณาเลือกห้องข้อความเท่านั้น` };
     }
     const botMember = await resolveGuildBotMember(interaction.guild, interaction.client);
     const sendPerms = channel.permissionsFor(botMember);
@@ -564,17 +564,17 @@ async function validateSetupChannelAndRole(interaction, channel, role) {
         return {
             ok: false,
             error:
-                `> ${config.emojis.error} บอทไม่มีสิทธิ์ส่งข้อความหรือ Embed ในห้อง <#${channel.id}>\n` +
-                `> เปิดสิทธิ์ Send Messages และ Embed Links ให้บอทก่อน`
+                `> ${config.emojis?.error || "❌"} บอทไม่มีสิทธิ์ส่งข้อความหรือ Embed ในห้อง <#${channel.id}>\n` +
+                `> กรุณาเปิดสิทธิ์ Send Messages และ Embed Links ให้บอทก่อน`
         };
     }
 
     if (role?.id === interaction.guild.id) {
-        return { ok: false, error: `> ${config.emojis.error} ไม่สามารถใช้ยศ @everyone เป็นยศยืนยันตัวตนได้` };
+        return { ok: false, error: `> ${config.emojis?.error || "❌"} ไม่สามารถใช้ยศ @everyone เป็นยศยืนยันตัวตนได้` };
     }
     const roleCheck = validateDirectRoleAssignment(botMember, role);
     if (!roleCheck.ok) {
-        return { ok: false, error: `> ${config.emojis.error} ${roleCheck.reason}` };
+        return { ok: false, error: `> ${config.emojis?.error || "❌"} ${roleCheck.reason}` };
     }
     return { ok: true, botMember };
 }
@@ -672,8 +672,8 @@ function buildVerificationPanelComponents({ interaction, verifyType, role, panel
             return {
                 ok: false,
                 error:
-                    `> ${config.emojis.error} สร้างลิงก์ OAuth ไม่สำเร็จ\n` +
-                    `> กรุณาตรวจการตั้งค่า OAuth และ public URL แล้วลองใหม่`
+                    `> ${config.emojis?.error || "❌"} สร้างลิงก์ OAuth ไม่สำเร็จ\n` +
+                    `> กรุณาตรวจสอบการตั้งค่า OAuth และ Public URL แล้วลองใหม่อีกครั้ง`
             };
         }
 
@@ -830,7 +830,7 @@ function buildVerificationSetupResultEmbed({
 }) {
     return new MessageEmbed()
         .setColor(config.system.themeColors.success)
-        .setTitle(`${config.emojis.success} ติดตั้งแผงยืนยันเรียบร้อย`)
+        .setTitle(`${config.emojis?.check_alt || config.emojis?.success || "✅"} ติดตั้งแผงยืนยันเรียบร้อย`)
         .setDescription(
             `แผงยืนยันถูกส่งไปที่ <#${channel.id}> แล้ว\n` +
             `ระบบบันทึกการตั้งค่าและพร้อมให้สมาชิกยืนยันตัวตน`
@@ -880,7 +880,7 @@ async function handleSetupVerify(interaction) {
     }
 
     await interaction.deferReply({ ephemeral: true });
-    await interaction.editReply({ content: `${config.emojis.loading} กำลังติดตั้งแผงยืนยันตัวตน...` }).catch(() => {});
+    await interaction.editReply({ content: `${config.emojis?.loading_circle || config.emojis?.loading || "⏳"} กำลังติดตั้งแผงยืนยันตัวตน...` }).catch(() => {});
 
     const channel = interaction.options.getChannel("channel");
     const role = interaction.options.getRole("role");
@@ -972,15 +972,15 @@ function verificationRecoverySummary(err = {}) {
 }
 
 function verificationSetupFailureMessage(err = {}) {
-    return `> ${config.emojis.error} ติดตั้งแผงยืนยันไม่สำเร็จ${verificationRecoverySummary(err)}\n` +
-        `> ตรวจสอบสิทธิ์ของบอทและสถานะระบบ แล้วลองใหม่`;
+    return `> ${config.emojis?.error || "❌"} ติดตั้งแผงยืนยันไม่สำเร็จ${verificationRecoverySummary(err)}\n` +
+        `> กรุณาตรวจสอบสิทธิ์ของบอทและสถานะระบบ แล้วลองใหม่อีกครั้ง`;
 }
 
 async function executeDirectRoleAssignment(interaction, member, role, roleId) {
     try {
         if (member.roles.cache.has(roleId)) {
             return interaction.reply({
-                content: `> ${config.emojis.success} คุณมียศ ${role.toString()} อยู่แล้ว`,
+                content: `> ${config.emojis?.check_alt || config.emojis?.success || "✅"} คุณมียศ ${role.toString()} อยู่แล้ว`,
                 ephemeral: true
             });
         }
@@ -990,8 +990,8 @@ async function executeDirectRoleAssignment(interaction, member, role, roleId) {
         return interaction.reply({
             embeds: [
                 new MessageEmbed()
-                    .setColor(config.system.themeColors.success)
-                    .setTitle(`${config.emojis.success} รับยศเรียบร้อย`)
+                    .setColor(config.system?.themeColors?.success || "#57F287")
+                    .setTitle(`${config.emojis?.check_alt || config.emojis?.success || "✅"} รับยศเรียบร้อย`)
                     .setDescription(`ยศ: ${role.toString()}`)
                     .setTimestamp()
             ],
@@ -1003,7 +1003,7 @@ async function executeDirectRoleAssignment(interaction, member, role, roleId) {
             .slice(0, 80);
         console.warn(`[VERIFY] role interaction failed: ${errorCode}`);
         return interaction.reply({
-            content: `> ${config.emojis.error} ไม่สามารถจัดการยศได้ กรุณาลองใหม่หรือติดต่อผู้ดูแล`,
+            content: `> ${config.emojis?.error || "❌"} ไม่สามารถจัดการยศได้ กรุณาลองใหม่อีกครั้งหรือติดต่อผู้ดูแลระบบ`,
             ephemeral: true
         });
     }
@@ -1015,7 +1015,7 @@ async function handleVerifyRoleButton(interaction, roleId) {
 
     if (!role) {
         return interaction.reply({
-            content: `> ${config.emojis.error} ไม่พบยศนี้แล้ว กรุณาแจ้ง Admin ตั้งค่าใหม่`,
+            content: `> ${config.emojis?.error || "❌"} ไม่พบยศนี้แล้ว กรุณาแจ้งผู้ดูแลระบบตั้งค่าใหม่`,
             ephemeral: true
         });
     }
@@ -1024,7 +1024,7 @@ async function handleVerifyRoleButton(interaction, roleId) {
     const roleCheck = validateDirectRoleAssignment(botMember, role);
     if (!roleCheck.ok) {
         return interaction.reply({
-            content: `> ${config.emojis.error} ${roleCheck.reason}`,
+            content: `> ${config.emojis?.error || "❌"} ${roleCheck.reason}`,
             ephemeral: true
         });
     }
@@ -1035,13 +1035,13 @@ async function handleVerifyRoleButton(interaction, roleId) {
     } catch (err) {
         console.error(`[VERIFY] Direct panel config read failed: ${String(err?.code || err?.name || "database_error").slice(0, 80)}`);
         return interaction.reply({
-            content: `> ${config.emojis.warning} ตรวจสอบสถานะแผงล่าสุดจากฐานข้อมูลไม่ได้ กรุณาลองใหม่ภายหลัง`,
+            content: `> ${config.emojis?.warning || "⚠️"} ไม่สามารถตรวจสอบสถานะแผงล่าสุดได้ กรุณาลองใหม่อีกครั้งในภายหลัง`,
             ephemeral: true
         });
     }
     if (!currentConfig) {
         return interaction.reply({
-            content: `> ${config.emojis.warning} แผงนี้ไม่ใช่แผงล่าสุดแล้ว กรุณาใช้แผงยืนยันตัวตนล่าสุด`,
+            content: `> ${config.emojis?.warning || "⚠️"} แผงนี้ไม่ใช่แผงล่าสุดแล้ว กรุณาใช้แผงยืนยันตัวตนล่าสุด`,
             ephemeral: true
         });
     }

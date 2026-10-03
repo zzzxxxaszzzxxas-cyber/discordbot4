@@ -206,7 +206,7 @@ function buildVoiceEventEmbed(snapshot, profile = null) {
         nextAction: snapshot.action,
         referenceId: getSessionShortId(snapshot.sessionId),
         timestamp: snapshot.verifiedAt,
-        footer: "Phomueangtai • ระบบออนช่องเสียง"
+        footer: "ระบบออนช่องเสียง"
     });
 }
 
@@ -256,7 +256,7 @@ async function sendVoiceDigestDM(ownerId, items, metadata = {}) {
             ],
             nextAction: "ตรวจสอบเฉพาะรายการที่ยังไม่กลับสู่สถานะปกติจากหน้า Dashboard",
             referenceId: digestReference,
-            footer: "Phomueangtai • สรุประบบออนช่องเสียง"
+            footer: "สรุประบบออนช่องเสียง"
         });
         return dmService.send({
             eventKey: `voice:${ownerId}:${digestReference}`,
@@ -384,7 +384,7 @@ function buildVoiceTrackerEmbed(snapshot, trackerState = {}, profile = null) {
         nextAction,
         referenceId: `track-${getSessionShortId(snapshot.sessionId)}`,
         timestamp: Date.now(),
-        footer: "Phomueangtai • Live Recovery Tracker"
+        footer: "ระบบติดตามการกู้คืนช่องเสียง"
     });
 }
 

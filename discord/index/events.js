@@ -1,17 +1,16 @@
 /* eslint-disable complexity -- Discord event routing is behavior-sensitive; refactor separately. */
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE] ⚠️
-DO NOT REMOVE: Anti-Raid logic, approval gate, command cooldowns.
-DO NOT REMOVE: guildCreate/guildDelete handlers.
-================================================================================
-*/
+/**
+ * Discord Event Router & Lifecycle Handlers
+ * - Message & interaction pipelines (Anti-Raid, spam tracking, command cooldowns).
+ * - Guild lifecycle management (guildCreate, guildDelete) and permission enforcement.
+ */
 
 const roleButton  = require('../features/roleButton');
 const protection  = require('../features/protection');
 const protectionCase = require('../features/protectionCase');
 const { IDS, PREFIXES } = require("../commands/customIds");
 const { isVoicePanelControl } = require("../guards/commandGuards");
+const appConfig = require("../config.json");
 const {
     canBanMember,
     canCreateInvite,
@@ -268,8 +267,11 @@ async function applyProtectionEnforcementAndNotice({ message, member, pConf, res
         findings.some(finding => finding.shouldDelete) &&
         actionResult.deletedMessages > 0
     ) {
+        const alertIcon = result?.severity === "critical"
+            ? (appConfig.emojis?.critical || appConfig.emojis?.alarm || "🚨")
+            : (appConfig.emojis?.intrusion_icon || appConfig.emojis?.alarm || appConfig.emojis?.shield || "🛡️");
         const notice = await message.channel.send({
-            content: `> 🔗 <@${message.author.id}> ข้อความถูกบล็อกโดยระบบ`,
+            content: `> ${alertIcon} <@${message.author.id}> ข้อความถูกระงับเนื่องจากตรวจพบเนื้อหาที่ขัดต่อนโยบายความปลอดภัย`,
             allowedMentions: { parse: [] }
         }).catch(() => null);
         if (notice) {
@@ -405,7 +407,7 @@ async function checkProtectedCommandAccess(interaction, config, shadowMasterId) 
     if (isOwner) return { allowed: true };
 
     const reply = {
-        content: `> 🔒 คำสั่งนี้สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
+        content: `> ${appConfig.emojis?.no_entry || "⛔"} คำสั่งนี้สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
         ephemeral: true
     };
     if (interaction.replied || interaction.deferred) await interaction.followUp(reply);
@@ -418,7 +420,7 @@ async function checkDisabledCommand(interaction, disabledCommands) {
         return { allowed: true };
     }
     const reply = {
-        content: `> ❌ คำสั่ง \`/${interaction.commandName}\` ถูกปิดใช้งานชั่วคราวโดยแอดมิน`,
+        content: `> ${appConfig.emojis?.disable || appConfig.emojis?.error || "❌"} คำสั่ง \`/${interaction.commandName}\` ถูกปิดใช้งานชั่วคราวโดยผู้ดูแลระบบ`,
         ephemeral: true
     };
     if (interaction.replied || interaction.deferred) await interaction.followUp(reply).catch(() => {});
@@ -445,7 +447,7 @@ function resolveCooldownKeys(interaction, cmdName, userId) {
 async function respondCooldownExceeded(interaction, cmdName, remaining) {
     const secs = (remaining / 1000).toFixed(1);
     const reply = {
-        content: `> ⏱️ กรุณารอ **${secs}s** ก่อนใช้ \`/${cmdName}\` อีกครั้ง`,
+        content: `> ${appConfig.emojis?.loading || "⏳"} กรุณารอสักครู่ (**${secs}** วินาที) ก่อนเรียกใช้คำสั่ง \`/${cmdName}\` อีกครั้ง`,
         ephemeral: true
     };
     if (interaction.replied || interaction.deferred) await interaction.followUp(reply).catch(() => {});
@@ -455,8 +457,8 @@ async function respondCooldownExceeded(interaction, cmdName, remaining) {
 async function respondCommandInFlight(interaction, cmdName, isChannelScoped) {
     await interaction.reply({
         content: isChannelScoped
-            ? `> ⏳ คำสั่ง \`/${cmdName}\` ในห้องนี้รอบก่อนกำลังทำงานอยู่ กรุณารอ`
-            : `> ⏳ คำสั่ง \`/${cmdName}\` รอบก่อนกำลังทำงานอยู่ กรุณารอ`,
+            ? `> ${appConfig.emojis?.loading || "⏳"} คำสั่ง \`/${cmdName}\` ในห้องนี้กำลังประมวลผลอยู่ กรุณารอสักครู่`
+            : `> ${appConfig.emojis?.loading || "⏳"} คำสั่ง \`/${cmdName}\` กำลังประมวลผลอยู่ กรุณารอสักครู่`,
         ephemeral: true
     }).catch(() => {});
 }
@@ -568,7 +570,7 @@ function isRoleButtonInteraction(interaction) {
 async function handleRoleButtonInteractionSafe(interaction) {
     return await roleButton.handleRoleInteraction(interaction).catch(async e => {
         console.error('[ROLE_BTN] ❌', e.message);
-        const r = { content: '❌ เกิดข้อผิดพลาด', ephemeral: true };
+        const r = { content: `> ${appConfig.emojis?.error || '❌'} เกิดข้อผิดพลาดในการจัดการยศ กรุณาลองใหม่อีกครั้ง`, ephemeral: true };
         if (interaction.deferred) return interaction.editReply(r);
         if (!interaction.replied) return interaction.reply(r);
     });
@@ -583,7 +585,7 @@ function finalizeCommandInteraction({ commandKey, commandInFlight, commandCooldo
 }
 
 async function replyInteractionError(interaction) {
-    const errReply = { content: '❌ เกิดข้อผิดพลาดภายใน กรุณาลองใหม่', ephemeral: true };
+    const errReply = { content: `> ${appConfig.emojis?.error || '❌'} เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง`, ephemeral: true };
     try {
         if (interaction.replied || interaction.deferred) await interaction.followUp(errReply);
         else await interaction.reply(errReply);

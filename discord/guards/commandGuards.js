@@ -1,4 +1,5 @@
 const { hasResolvedPermission } = require("../core/discordPermissions");
+const config = require("../config.json");
 const BLOCKED_MESSAGE_PATTERNS = [
     /discord\.gg\/\S+/gi,
     /https?:\/\/\S+\.(exe|bat|cmd|sh|ps1)/gi
@@ -63,8 +64,8 @@ async function requireElevatedMentionPermission(interaction, permissionTarget, a
     if (hasPermission(permissionTarget, "MentionEveryone")) return true;
 
     const content = actor === "bot"
-        ? "> ❌ บอทไม่มีสิทธิ์ Mention @everyone, @here หรือยศที่ไม่ได้เปิดให้ Mention"
-        : "> ⛔ คุณไม่มีสิทธิ์ Mention @everyone, @here หรือยศที่ไม่ได้เปิดให้ Mention";
+        ? `> ${config.emojis?.error || "❌"} บอทไม่มีสิทธิ์ Mention @everyone, @here หรือยศที่ไม่ได้เปิดให้ Mention`
+        : `> ${config.emojis?.no_entry || "⛔"} คุณไม่มีสิทธิ์ Mention @everyone, @here หรือยศที่ไม่ได้เปิดให้ Mention`;
     await safeReply(interaction, { content, ephemeral: true });
     return false;
 }

@@ -86,11 +86,11 @@ function parseTimeoutDuration(interaction, action) {
         rawVal = getIntegerOption(interaction?.options, "minutes");
     }
     if (rawVal === null || rawVal === undefined) {
-        return { ok: false, content: `> ${config.emojis.error} กรุณาระบุระยะเวลา` };
+        return { ok: false, content: `> ${config.emojis?.error || "❌"} กรุณาระบุระยะเวลา` };
     }
     const num = Number(rawVal);
     if (!Number.isFinite(num) || num < 0) {
-        return { ok: false, content: `> ${config.emojis.error} เวลาต้องไม่ติดลบ!` };
+        return { ok: false, content: `> ${config.emojis?.error || "❌"} เวลาต้องไม่ติดลบ!` };
     }
     if (num === 0) {
         return {
@@ -151,28 +151,28 @@ function resolveModerationMeta(action, extra = {}) {
     const isUntimeout = Boolean(extra.isUntimeout || extra.duration?.isUntimeout);
     if (action === "ban") {
         return {
-            color: config.system.themeColors.error || "#ED4245",
-            title: `${config.emojis.success} แบนสมาชิกเรียบร้อย`,
+            color: config.system?.themeColors?.error || "#ED4245",
+            title: `${config.emojis?.red_card || config.emojis?.error || "❌"} แบนสมาชิกเรียบร้อย`,
             label: "BAN"
         };
     }
     if (action === "kick") {
         return {
-            color: config.system.themeColors.warning || "#FEE75C",
-            title: `${config.emojis.success} เตะสมาชิกเรียบร้อย`,
+            color: config.system?.themeColors?.warning || "#FEE75C",
+            title: `${config.emojis?.red_card || config.emojis?.warning || "⚠️"} เตะสมาชิกเรียบร้อย`,
             label: "KICK"
         };
     }
     if (isUntimeout) {
         return {
-            color: config.system.themeColors.success || "#57F287",
-            title: `${config.emojis.success} ปลด Timeout เรียบร้อย`,
+            color: config.system?.themeColors?.success || "#57F287",
+            title: `${config.emojis?.check_alt || config.emojis?.success || "✅"} ปลด Timeout เรียบร้อย`,
             label: "UNTIMEOUT"
         };
     }
     return {
-        color: config.system.themeColors.primary || "#5865F2",
-        title: `${config.emojis.success} ตั้ง Timeout เรียบร้อย`,
+        color: config.system?.themeColors?.primary || "#5865F2",
+        title: `${config.emojis?.alarm || config.emojis?.warning || "⚠️"} ตั้ง Timeout เรียบร้อย`,
         label: "TIMEOUT"
     };
 }
@@ -186,7 +186,7 @@ function buildModerationActionDetailLines(action, extra = {}) {
             lines.push(`> **ระยะเวลา:** ${durFormatted}`);
         }
         if (extra.duration?.clamped) {
-            lines.push(`> ${config.emojis.warning} *ระยะเวลาถูกปรับเป็นสูงสุด 28 วันตามข้อจำกัดของ Discord*`);
+            lines.push(`> ${config.emojis?.warning || "⚠️"} *ระยะเวลาถูกปรับเป็นสูงสุด 28 วันตามข้อจำกัดของ Discord*`);
         }
     } else if (action === "ban" && extra.deleteMessageSeconds !== undefined && extra.deleteMessageSeconds > 0) {
         lines.push(`> **ลบข้อความ:** ${formatDeleteSeconds(extra.deleteMessageSeconds)}`);
@@ -229,8 +229,8 @@ function buildModerationReplyEmbed(interaction, target, action, reason, caseNumb
 }
 
 function moderationErrorReply(err) {
-    if (err.message === "MISSING_PERMS") return `> ${config.emojis.error} บอทไม่มีสิทธิ์ที่จำเป็น!`;
-    return `> ${config.emojis.error} ไม่สามารถดำเนินการได้ โปรดลองอีกครั้งหรือติดต่อผู้ดูแลระบบ`;
+    if (err.message === "MISSING_PERMS") return `> ${config.emojis?.error || "❌"} บอทไม่มีสิทธิ์ที่จำเป็น!`;
+    return `> ${config.emojis?.error || "❌"} ไม่สามารถดำเนินการได้ โปรดลองอีกครั้งหรือติดต่อผู้ดูแลระบบ`;
 }
 
 module.exports = {

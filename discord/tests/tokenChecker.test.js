@@ -178,8 +178,8 @@ test('tokenChecker embed builders produce correct outputs', () => {
         summary: { total: 20, boost: 0, nitro: 0, normal: 20, bot: 0, invalid: 0, valid: 20 },
         results: batch20Results
     });
-    assert.match(batch20Embed.data.description, /1\. 🟢 ปกติ \*\*User1\*\*/);
-    assert.match(batch20Embed.data.description, /20\. 🟢 ปกติ \*\*User20\*\*/);
+    assert.match(batch20Embed.data.description, /1\. (?:<a:g03_pmt:\d+>|🟢) ปกติ \*\*User1\*\*/);
+    assert.match(batch20Embed.data.description, /20\. (?:<a:g03_pmt:\d+>|🟢) ปกติ \*\*User20\*\*/);
     assert.equal(batch20Embed.data.description.includes('และอีก'), false);
     assert.equal(Boolean(batch20Embed.data.footer), false);
 });

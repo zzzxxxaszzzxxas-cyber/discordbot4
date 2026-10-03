@@ -252,7 +252,7 @@ const slashCommandsData = [
             {
                 type: 1,
                 name: "panel",
-                description: "เปิดแผงควบคุม NeverDie Auto Quest (เฉพาะเจ้าของบอท)",
+                description: "เปิดแผงควบคุมระบบ Quest อัตโนมัติ (เฉพาะเจ้าของบอท)",
                 required: false,
                 options: [
                     {

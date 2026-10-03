@@ -593,13 +593,13 @@ function buildPanel(channel, status = null) {
     }
     const embed = new EmbedBuilder()
         .setColor(config.system?.themeColors?.primary || "#5865F2")
-        .setTitle(`${config.emojis.voice_ch || "🔊"} จัดการห้องเสียง`)
+        .setTitle(`${config.emojis?.voice_ch || "🔊"} จัดการห้องเสียง`)
         .setDescription(descriptionLines.join("\n"))
         .setTimestamp();
     const iconUrl = channel?.guild?.iconURL?.({ forceStatic: false, size: 256 }) || channel?.guild?.iconURL?.();
     if (iconUrl) embed.setThumbnail(iconUrl);
     const actions = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(IDS.DISCONNECT).setLabel("ตัดสายทั้งหมด").setEmoji("🚪").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(IDS.DISCONNECT).setLabel("ตัดสายทั้งหมด").setEmoji(config.emojis?.voice_leave || "🚪").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId(IDS.LOCK_MUTE).setLabel("ปิดไมค์").setEmoji("🔇").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(IDS.LOCK_DEAF).setLabel("ปิดหู").setEmoji("🎧").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(IDS.UNLOCK_MUTE).setLabel("เปิดไมค์").setEmoji("🎙️").setStyle(ButtonStyle.Success),
@@ -757,16 +757,16 @@ async function handleVoiceAdminInteraction(interaction) {
             destination = await interaction.guild.channels.fetch(destinationId).catch(() => null);
         }
     }
-    if (!action) return interaction.editReply(buildPanel(interaction.channel, `> ${config.emojis.error} คำสั่งแผงนี้ไม่ถูกต้อง`));
+    if (!action) return interaction.editReply(buildPanel(interaction.channel, `> ${config.emojis?.error || "❌"} คำสั่งแผงนี้ไม่ถูกต้อง`));
 
     const actionLoadingText = ({
-        disconnect: `${config.emojis.loading} กำลังตัดสายทั้งหมด...`,
-        mute: `${config.emojis.loading} กำลังปิดไมค์...`,
-        deaf: `${config.emojis.loading} กำลังปิดหู...`,
-        unmute: `${config.emojis.loading} กำลังเปิดไมค์...`,
-        undeaf: `${config.emojis.loading} กำลังเปิดหู...`,
-        move: `${config.emojis.loading} กำลังย้ายสมาชิก...`
-    })[action] || `${config.emojis.loading} กำลังดำเนินการ...`;
+        disconnect: `${config.emojis?.loading || "⏳"} กำลังตัดสายทั้งหมด...`,
+        mute: `${config.emojis?.loading || "⏳"} กำลังปิดไมค์...`,
+        deaf: `${config.emojis?.loading || "⏳"} กำลังปิดหู...`,
+        unmute: `${config.emojis?.loading || "⏳"} กำลังเปิดไมค์...`,
+        undeaf: `${config.emojis?.loading || "⏳"} กำลังเปิดหู...`,
+        move: `${config.emojis?.loading || "⏳"} กำลังย้ายสมาชิก...`
+    })[action] || `${config.emojis?.loading || "⏳"} กำลังดำเนินการ...`;
     await interaction.editReply(buildPanel(interaction.channel, `> ${actionLoadingText}`)).catch(() => {});
 
     try {
@@ -775,7 +775,7 @@ async function handleVoiceAdminInteraction(interaction) {
     }
     catch (error) {
         const detail = describePanelActionFailure(error);
-        return interaction.editReply(buildPanel(interaction.channel, `> ${config.emojis.error} ${detail}`));
+        return interaction.editReply(buildPanel(interaction.channel, `> ${config.emojis?.error || "❌"} ${detail}`));
     }
 }
 
@@ -955,7 +955,7 @@ async function handleSecretMessage(message) {
     });
 
     const pendingMessage = await sendSecretMessage(message, {
-        content: "> ⏳ กำลังดำเนินการ..."
+        content: `> ${config.emojis?.loading || "⏳"} กำลังดำเนินการ...`
     });
 
     try {

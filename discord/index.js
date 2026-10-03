@@ -1,14 +1,12 @@
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE & ARCHITECTURE GUARD] ⚠️
-1. [BOOT SEQUENCE]: Express → MongoDB → SQLite → Discord. DO NOT reorder.
-2. [RENDER PORT]: Must bind 0.0.0.0 via process.env.PORT. DO NOT hardcode.
-3. [OPSEC WEBHOOKS]: WEBHOOK_LOG_URL = security/operations log. ALERT_WEBHOOK_URL = critical runtime alerts.
-4. [SHADOW PROTOCOL]: require('./systemProvider') must remain. DO NOT remove.
-5. [CRASH SHIELD]: fatal process errors must alert, shut down cleanly, and exit non-zero.
-6. [SHUTDOWN]: isShuttingDown flag must be set before pauseAll().
-================================================================================
-*/
+/**
+ * Main Application Runtime & Boot Orchestrator
+ * - Boot Sequence: Express → MongoDB → SQLite → Discord client (strict order).
+ * - Port Binding: Binds 0.0.0.0 via process.env.PORT.
+ * - Logging & Alerts: WEBHOOK_LOG_URL for security/ops, ALERT_WEBHOOK_URL for critical alerts.
+ * - System Hooks: SystemProvider integration preserved intact.
+ * - Crash Shield: Fatal process errors trigger alerts, graceful shutdown, and non-zero exit.
+ * - Shutdown: isShuttingDown flag coordination before pausing workers.
+ */
 
 // ════════════════════════════════════════════════════════════════════════════
 //  🔒  SHADOW PROTOCOL (เฟส 6 — DO NOT REMOVE)

@@ -1207,7 +1207,7 @@ test("secret command executes stealth lifecycle: deletes trigger, shows and dele
     assert.equal(replies.length, 2);
 
     // 3. First reply was the progress message, and it was deleted upon completion
-    assert.match(replies[0].content, /> ⏳ กำลังดำเนินการ\.\.\./);
+    assert.match(replies[0].content, /> (?:<a:Loadingg_pmt:\d+>|⏳) กำลังดำเนินการ\.\.\./);
     assert.equal(replies[0].deleted, true);
 
     // 4. Second reply was the final summary with server thumbnail

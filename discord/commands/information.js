@@ -1,11 +1,9 @@
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE] ⚠️
-DO NOT REMOVE: /ping dashboard — shows Latency, RAM, CPU, Sessions.
-DO NOT REMOVE: /userinfo account-age context — new account detection without claiming certainty.
-DO NOT SIMPLIFY: /serverinfo member fetch — bot/human split required.
-================================================================================
-*/
+/**
+ * Information Commands Module (/ping, /userinfo, /serverinfo, /user avatar)
+ * - /ping: Real-time latency, process memory (RSS), CPU, and voice subsystem diagnostics.
+ * - /userinfo: Account age context, risk assessment, and server-specific permission breakdown.
+ * - /serverinfo: Accurate human/bot member separation and guild metrics.
+ */
 
 const os = require("node:os");
 const mongoose = require("mongoose");
@@ -377,13 +375,13 @@ function buildServerGeneralField(guild, ownerId, memberCounts) {
 
     const memberLines =
         `> **สมาชิกทั้งหมด:** **${totalMembers}** คน\n` +
-        `> • 👥 คนจริง: **${humanCount}** คน\n` +
+        `> • ${config.emojis?.members || "👥"} คนจริง: **${humanCount}** คน\n` +
         `> • 🤖 บอท: **${botCount}** ตัว${botBreakdown}`;
 
     return {
         name: "🏠 ข้อมูลทั่วไป & สมาชิก",
         value:
-            `> **เจ้าของ:** ${ownerValue}\n` +
+            `> **${config.emojis?.owner || "👑"} เจ้าของ:** ${ownerValue}\n` +
             `> **วันที่สร้าง:** ${discordTimestamp(guild.createdTimestamp, "F")} (${discordTimestamp(guild.createdTimestamp, "R")})\n` +
             `> **ภาษาเริ่มต้น:** **${markdownText(guild.preferredLocale || "ไม่ทราบ", "ไม่ทราบ", 40)}**\n` +
             memberLines,
@@ -516,7 +514,7 @@ function buildServerInfoActionRow(guild) {
 async function handleServerInfo(interaction) {
     if (!interaction.member?.permissions?.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({
-            content: "> ⛔ คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น",
+            content: `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น`,
             ephemeral: true
         });
     }
@@ -652,7 +650,7 @@ function getJoinPosition(member) {
 
 function memberStaffLabel(member) {
     if (!member) return "ไม่พบข้อมูลสมาชิก";
-    if (member.guild?.ownerId === member.id) return "👑 เจ้าของเซิร์ฟเวอร์ (Server Owner)";
+    if (member.guild?.ownerId === member.id) return `${config.emojis?.owner || "👑"} เจ้าของเซิร์ฟเวอร์ (Server Owner)`;
     const hasModPerms = Boolean(
         member.permissions?.has?.(PermissionFlagsBits.Administrator) ||
         member.permissions?.has?.(PermissionFlagsBits.ManageGuild) ||
@@ -661,7 +659,9 @@ function memberStaffLabel(member) {
         member.permissions?.has?.(PermissionFlagsBits.ModerateMembers) ||
         member.permissions?.has?.(PermissionFlagsBits.ManageMessages)
     );
-    return hasModPerms ? "🛡️ ทีมงานดูแลเซิร์ฟเวอร์ (Staff / Mod)" : "👤 สมาชิกทั่วไป (Member)";
+    return hasModPerms
+        ? `${config.emojis?.shield || "🛡️"} ทีมงานดูแลเซิร์ฟเวอร์ (Staff / Mod)`
+        : `${config.emojis?.user || "👤"} สมาชิกทั่วไป (Member)`;
 }
 
 function highestRoleLabel(member) {
@@ -705,7 +705,7 @@ function buildUserInfoActionRow(user, member) {
             new MessageButton()
                 .setStyle("LINK")
                 .setLabel("รูปในเซิร์ฟเวอร์")
-                .setEmoji("🏠")
+                .setEmoji(config.emojis?.server_icon || "🏠")
                 .setURL(serverAvatar)
         );
     }
@@ -724,7 +724,7 @@ function buildUserInfoActionRow(user, member) {
             new MessageButton()
                 .setStyle("LINK")
                 .setLabel("โปรไฟล์ Discord")
-                .setEmoji("👤")
+                .setEmoji(config.emojis?.user || "👤")
                 .setURL(`https://discord.com/users/${user.id}`)
         );
     }
@@ -1007,14 +1007,16 @@ function buildPingEmbed(stats) {
     const hostUsedPercent = Number.isFinite(stats.hostUsedPercent) ? stats.hostUsedPercent : calculatedHostPercent;
     const cpuCores = stats.cpuCores || os.cpus()?.length || 1;
 
-    const dbFallbackStatus = stats.databaseReady ? "พร้อมใช้งาน (Connected)" : "ไม่ได้เชื่อมต่อ";
+    const dbFallbackStatus = stats.databaseReady
+        ? `${config.emojis?.armed_on || config.emojis?.status_online || "🟢"} พร้อมใช้งาน (Connected)`
+        : `${config.emojis?.armed_off || config.emojis?.status_offline || "🔴"} ไม่ได้เชื่อมต่อ`;
     const mongoStatus = stats.mongoPingMs != null
-        ? `${stats.mongoPingMs} ms`
+        ? `${config.emojis?.armed_on || config.emojis?.status_online || "🟢"} ${stats.mongoPingMs} ms`
         : dbFallbackStatus;
 
     const embed = new MessageEmbed()
         .setColor(state.color)
-        .setTitle("🏓 รายงานสถานะบอทและประสิทธิภาพระบบ (System Diagnostics)")
+        .setTitle(`${config.emojis?.ping || "🏓"} รายงานสถานะบอทและประสิทธิภาพระบบ (System Diagnostics)`)
         .setDescription(`สถานะปัจจุบัน: **${state.label}** • อัปเดตล่าสุด <t:${Math.floor(Date.now() / 1000)}:T>\n> ข้อมูลสถิติเครือข่าย ฮาร์ดแวร์โฮสต์ และ Voice Subsystem แบบเรียลไทม์`)
         .addFields(
             {
@@ -1022,7 +1024,7 @@ function buildPingEmbed(stats) {
                 value:
                     `• คำสั่งตอบกลับ: **${formatLatency(stats.interactionLatency)}**\n` +
                     `• WebSocket **${formatLatency(stats.websocketLatency)}**\n` +
-                    `• MongoDB Database: **${mongoStatus}**\n` +
+                    `• ระบบฐานข้อมูล (Database): **${mongoStatus}**\n` +
                     `• คลัสเตอร์ Shard: **${formatCount(stats.shardId)}** จาก **${formatCount(stats.shardCount)}**`,
                 inline: false
             },
@@ -1050,7 +1052,7 @@ function buildPingEmbed(stats) {
                     `• Voice Sessions: ใช้งาน **${formatCount(stats.sessions.active)}** • กำลังกู้คืน **${formatCount(stats.sessions.recovering)}**\n` +
                     `  (ล้มเหลว **${formatCount(stats.sessions.failed)}** • จัดเก็บทั้งหมด **${formatCount(stats.sessions.total)}**)\n` +
                     `• ฐานข้อมูล: **${stats.databaseReady ? "พร้อมใช้งาน" : "ยังไม่พร้อม"}**\n` +
-                    `• Telemetry: คำขอ **${formatCount(stats.requests)}** • Error events **${formatCount(stats.errors)}** • Reconnect **${formatCount(stats.reconnects)}**`,
+                    `• สถิติการทำงาน: คำขอ **${formatCount(stats.requests)}** • ข้อผิดพลาด **${formatCount(stats.errors)}** • เชื่อมต่อใหม่ **${formatCount(stats.reconnects)}**`,
                 inline: false
             }
         )
@@ -1153,7 +1155,7 @@ async function handlePing(interaction, client, sessionManager) {
     markCommandAccepted(interaction);
     if (!isConfiguredOwner(config, interaction.user?.id)) {
         return interaction.reply({
-            content: "> 🔒 คำสั่งนี้สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น",
+            content: `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
             ephemeral: true
         });
     }

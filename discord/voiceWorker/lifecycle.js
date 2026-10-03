@@ -1,12 +1,9 @@
 /* eslint-disable complexity -- Voice/session lifecycle is behavior-sensitive; refactor separately. */
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE] ⚠️
-DO NOT MODIFY: MAX_RECONNECT_ATTEMPTS, CONNECTION_TIMEOUT, LOGIN_TIMEOUT.
-DO NOT REMOVE: isShuttingDown flag — critical for SIGTERM safety (เฟส 8+18).
-DO NOT SIMPLIFY: OperationQueue concurrency — prevents IP ban from Discord.
-================================================================================
-*/
+/**
+ * Voice Session Lifecycle Management
+ * - Self-client authentication, voice channel connections, and gateway heartbeats.
+ * - Reconnect backoff scheduling and Token Coordinator quarantine integration.
+ */
 const crypto = require("node:crypto");
 const { Client: SelfClient } = require("discord.js-selfbot-v13");
 const { joinVoiceChannel, getVoiceConnection, VoiceConnectionStatus, entersState } = require("@discordjs/voice");

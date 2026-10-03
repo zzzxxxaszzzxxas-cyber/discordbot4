@@ -432,11 +432,13 @@ function resolveInvalidTokenErrorMessage(result) {
 }
 
 function buildSingleTokenEmbed(result) {
-    const errorEmoji = config.emojis?.error || '❌';
+    const errorEmoji = config.emojis?.red_card || config.emojis?.error || '❌';
     const successEmoji = config.emojis?.success || '✅';
     const searchEmoji = config.emojis?.search || '🔍';
     const boostEmoji = config.emojis?.boost || '🚀';
     const lockEmoji = config.emojis?.lock || '🔒';
+    const keyEmoji = config.emojis?.key || '🔑';
+    const userEmoji = config.emojis?.user || '👤';
 
     if (!result.valid) {
         return new MessageEmbed()
@@ -444,7 +446,7 @@ function buildSingleTokenEmbed(result) {
             .setTitle(`${errorEmoji} ผลการตรวจสอบ Discord Token: ใช้งานไม่ได้`)
             .setDescription([
                 `**สถานะ:** ${errorEmoji} \`${resolveInvalidTokenErrorMessage(result)}\``,
-                `**Token:** \`${result.maskedToken}\``
+                `**${keyEmoji} Token:** \`${result.maskedToken}\``
             ].join('\n'))
             .setTimestamp();
     }
@@ -465,7 +467,7 @@ function buildSingleTokenEmbed(result) {
                 `**ชื่อบอท:** \`${nameDisplay}\` \`[BOT]\``,
                 `**ID บอท:** \`${result.id}\``,
                 `**สร้างเมื่อ:** ${createdDisplay}`,
-                `**Token:** \`${result.maskedToken}\``
+                `**${keyEmoji} Token:** \`${result.maskedToken}\``
             ].join('\n'))
             .setTimestamp();
 
@@ -514,7 +516,7 @@ function buildSingleTokenEmbed(result) {
         .setThumbnail(result.avatarUrl)
         .addFields(
             {
-                name: 'ข้อมูลบัญชี',
+                name: `${userEmoji} ข้อมูลบัญชี`,
                 value: `• **ชื่อผู้ใช้:** ${nameDisplay}\n• **ไอดีผู้ใช้:** \`${result.id}\`\n• **สร้างเมื่อ:** ${createdDisplay}`,
                 inline: false
             },
@@ -524,17 +526,17 @@ function buildSingleTokenEmbed(result) {
                 inline: false
             },
             {
-                name: 'Server Boost',
+                name: `${boostEmoji} Server Boost`,
                 value: boostDetail,
                 inline: false
             },
             {
-                name: 'ความปลอดภัย',
+                name: `${lockEmoji} ความปลอดภัย`,
                 value: securityLines,
                 inline: false
             },
             {
-                name: 'Token',
+                name: `${keyEmoji} Token`,
                 value: `\`${result.maskedToken}\``,
                 inline: false
             }
@@ -546,11 +548,11 @@ function resolveBatchItemPlanTag(item) {
     if (item.isBot || item.category === 'bot') return '🤖 Bot';
     if (item.hasBoost) return `${config.emojis?.boost || '🚀'} Boost`;
     if (item.hasNitro) return '💎 Nitro';
-    return '🟢 ปกติ';
+    return `${config.emojis?.status_online || '🟢'} ปกติ`;
 }
 
 function formatBatchItemLine(item, index) {
-    const errorEmoji = config.emojis?.error || '❌';
+    const errorEmoji = config.emojis?.red_card || config.emojis?.error || '❌';
     if (!item.valid) {
         return `${index}. ${errorEmoji} \`${item.maskedToken}\` — ${resolveInvalidTokenErrorMessage(item)}`;
     }
@@ -561,9 +563,9 @@ function formatBatchItemLine(item, index) {
 
 function buildBatchSummaryEmbed(batchData) {
     const { summary, results } = batchData;
-    const successEmoji = config.emojis?.success || '✅';
+    const successEmoji = config.emojis?.check_alt || config.emojis?.success || '✅';
     const boostEmoji = config.emojis?.boost || '🚀';
-    const errorEmoji = config.emojis?.error || '❌';
+    const errorEmoji = config.emojis?.red_card || config.emojis?.error || '❌';
 
     let color = THEME_COLORS.NORMAL;
     if (summary.boost > 0) {
@@ -578,7 +580,7 @@ function buildBatchSummaryEmbed(batchData) {
         `**สรุปผลการตรวจสอบทั้งหมด:** \`${summary.total}\` Token`,
         `• ${boostEmoji} **Nitro Boost:** \`${summary.boost}\``,
         `• 💎 **Nitro (ไม่มี Boost):** \`${summary.nitro}\``,
-        `• **Token ปกติ:** \`${summary.normal}\``,
+        `• ${config.emojis?.status_online || '🟢'} **Token ปกติ:** \`${summary.normal}\``,
         summary.bot > 0 ? `• 🤖 **Token บอท:** \`${summary.bot}\`` : null,
         `• ${errorEmoji} **Token ใช้งานไม่ได้:** \`${summary.invalid}\``
     ].filter(Boolean).join('\n');

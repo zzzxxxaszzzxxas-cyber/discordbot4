@@ -1,13 +1,9 @@
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE] ⚠️
-This file is the ROUTER and compatibility layer.
-Command logic lives in: commands/moderation.js, information.js, utility.js, verification.js
-Panel rendering and panel interactions live in commands/panelViews.js and commands/panelInteractions.js.
-DO NOT REMOVE: panelMessages, restorePanels, cleanupGuild exports.
-DO NOT REMOVE: handleMessage — used by index.js messageCreate event.
-================================================================================
-*/
+/**
+ * Commands Router & Compatibility Layer
+ * - Routes command executions to respective modules (moderation, information, utility, verification).
+ * - Panel rendering and panel interactions live in commands/panelViews.js and commands/panelInteractions.js.
+ * - Manages panelMessages state, restorePanels, cleanupGuild, and legacy handleMessage for messageCreate event.
+ */
 
 const config = require("./config.json");
 const sessionManager = require("./sessionManager");

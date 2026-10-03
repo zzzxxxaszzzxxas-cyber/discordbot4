@@ -1,13 +1,11 @@
 'use strict';
 
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE] ⚠️
-DO NOT HARDCODE PORT — use process.env.PORT.
-DO NOT REMOVE: rateLimitMiddleware, checkAuth, logIntrusion.
-Preserved OI-04 invariant: token: getSessionTokenSafe
-================================================================================
-*/
+/**
+ * Express Web Dashboard & API Server
+ * - Dynamic port binding via process.env.PORT.
+ * - Security middleware: rateLimitMiddleware, checkAuth, logIntrusion.
+ * - Preserved OI-04 invariant: token: getSessionTokenSafe for authenticated owner dashboard.
+ */
 
 const crypto = require("node:crypto");
 const auth = require("./auth");

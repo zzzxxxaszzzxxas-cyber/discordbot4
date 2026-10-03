@@ -79,7 +79,7 @@ function buildQuestPanelRow({ showDaily = false } = {}) {
         new MessageButton()
             .setCustomId(IDS.BTN_QUEST_RUN_ONESHOT)
             .setLabel('START NOW')
-            .setEmoji('🚀')
+            .setEmoji(config.emojis?.boost || '🚀')
             .setStyle('SUCCESS')
     ];
 
@@ -97,7 +97,7 @@ function buildQuestPanelRow({ showDaily = false } = {}) {
         new MessageButton()
             .setCustomId(IDS.BTN_QUEST_STOP)
             .setLabel('STOP')
-            .setEmoji('🛑')
+            .setEmoji(config.emojis?.stop || '🛑')
             .setStyle('DANGER')
     );
 
@@ -133,7 +133,7 @@ async function buildStopPanelPayload(ownerId, notice = null) {
     const scheduledJobs = getUserJobs(ownerId, { mode: 'scheduled' });
     const totalActive = rows.length + oneShotJobs.length;
 
-    const embedTitle = totalActive > 0 ? '🛑 AUTO QUEST RUNNER CONTROL' : '✅ ไม่มี Runner ที่กำลังทำงาน';
+    const embedTitle = totalActive > 0 ? `${config.emojis?.stop || '🛑'} จัดการ Runner เควสอัตโนมัติ` : `${config.emojis?.success || '✅'} ไม่มี Runner ที่กำลังทำงาน`;
     const embedDesc = totalActive > 0
         ? 'เลือก Token ที่ต้องการหยุดจากเมนูด้านล่าง หรือกดปุ่ม **STOP ALL** เพื่อหยุดทั้งหมด'
         : 'สามารถกด **START NOW** หรือ **AUTO DAILY** ได้เลย';
@@ -177,7 +177,7 @@ async function buildStopPanelPayload(ownerId, notice = null) {
         new MessageButton()
             .setCustomId(IDS.BTN_QUEST_STOP_ALL)
             .setLabel('STOP ALL')
-            .setEmoji('🛑')
+            .setEmoji(config.emojis?.stop || '🛑')
             .setStyle('DANGER')
             .setDisabled(totalActive === 0)
     );
@@ -192,7 +192,7 @@ async function handleQuestCommand(interaction) {
     if (subcommand === 'panel') {
         if (!isBotOwner(interaction.user.id)) {
             return safeReply(interaction, {
-                content: '🔒 คำสั่งเปิดแผงควบคุม `/quest panel` สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น',
+                content: `> ${config.emojis?.no_entry || '⛔'} คำสั่งเปิดแผงควบคุม \`/quest panel\` สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
                 flags: 64
             });
         }
@@ -209,7 +209,7 @@ async function handleQuestCommand(interaction) {
     }
 
     return safeReply(interaction, {
-        content: '❌ คำสั่งย่อยไม่ถูกต้อง กรุณาใช้ `/quest panel`',
+        content: `> ${config.emojis?.error || '❌'} คำสั่งย่อยไม่ถูกต้อง กรุณาใช้ \`/quest panel\``,
         flags: 64
     });
 }
@@ -228,7 +228,7 @@ async function handleQuestButton(interaction) {
     if (customId === IDS.BTN_QUEST_STOP) {
         if (typeof interaction.deferReply === 'function') {
             await interaction.deferReply({ flags: 64 });
-            await interaction.editReply({ content: `${config.emojis?.loading || '⏳'} กำลังโหลด...` }).catch(() => null);
+            await interaction.editReply({ content: `${config.emojis?.loading_circle || config.emojis?.loading || '⏳'} กำลังโหลด...` }).catch(() => null);
             const payload = await buildStopPanelPayload(interaction.user.id);
             return interaction.editReply({ content: null, ...payload });
         }
@@ -259,8 +259,8 @@ async function handleQuestButton(interaction) {
         const payload = await buildStopPanelPayload(
             interaction.user.id,
             totalStopped > 0
-                ? `🛑 สั่งหยุด Runner ทั้งหมดแล้ว **${totalStopped}** รายการ`
-                : 'ℹ️ ไม่มี Runner ที่กำลังทำงาน'
+                ? `> ${config.emojis?.stop || '🛑'} สั่งหยุด Runner ทั้งหมดแล้ว **${totalStopped}** รายการ`
+                : `> ${config.emojis?.alert || 'ℹ️'} ไม่มี Runner ที่กำลังทำงาน`
         );
         if (typeof interaction.editReply === 'function' && interaction.deferred) {
             return interaction.editReply(payload);
@@ -269,7 +269,7 @@ async function handleQuestButton(interaction) {
     }
 
     return safeReply(interaction, {
-        content: 'ℹ️ ปุ่มควบคุมนี้หมดอายุหรือไม่รองรับแล้ว',
+        content: `> ${config.emojis?.warning || '⚠️'} ปุ่มควบคุมนี้หมดอายุหรือไม่รองรับแล้ว`,
         flags: 64
     });
 }
@@ -292,8 +292,8 @@ async function handleQuestSelect(interaction) {
     const payload = await buildStopPanelPayload(
         interaction.user.id,
         stopped > 0
-            ? `🛑 สั่งหยุด Auto Daily Runner ที่เลือกแล้ว **${stopped}** บัญชี`
-            : 'ℹ️ ดำเนินการหยุดรายการที่เลือกเรียบร้อยแล้ว'
+            ? `> ${config.emojis?.stop || '🛑'} สั่งหยุด Auto Daily Runner ที่เลือกแล้ว **${stopped}** บัญชี`
+            : `> ${config.emojis?.success || '✅'} ดำเนินการหยุดรายการที่เลือกเรียบร้อยแล้ว`
     );
     if (typeof interaction.editReply === 'function' && interaction.deferred) {
         return interaction.editReply(payload);
@@ -311,14 +311,14 @@ async function handleQuestModalSubmit(interaction) {
 
     if (tokens.length === 0) {
         return safeReply(interaction, {
-            content: '❌ ไม่พบ Token กรุณาใส่อย่างน้อย 1 Token ในแบบฟอร์ม',
+            content: `> ${config.emojis?.error || '❌'} ไม่พบ Token กรุณาระบุอย่างน้อย 1 Token ในแบบฟอร์ม`,
             flags: 64
         });
     }
 
     if (tokens.length > 10) {
         return safeReply(interaction, {
-            content: '❌ สามารถส่งได้สูงสุด **10 บัญชี** ต่อครั้ง กรุณาแบ่งส่งใหม่',
+            content: `> ${config.emojis?.error || '❌'} สามารถส่งได้สูงสุด **10 บัญชี** ต่อครั้ง กรุณาแบ่งส่งใหม่`,
             flags: 64
         });
     }
@@ -336,14 +336,16 @@ async function handleQuestModalSubmit(interaction) {
         mode
     });
 
-    const lines = results.map((r) => r.line || (r.started ? `✅ เริ่มสำเร็จ: ${r.username}` : '❌ เริ่มไม่สำเร็จ'));
+    const lines = results.map((r) => r.line || (r.started ? `${config.emojis?.check_alt || config.emojis?.success || '✅'} เริ่มสำเร็จ: ${r.username}` : `${config.emojis?.red_card || config.emojis?.error || '❌'} เริ่มไม่สำเร็จ`));
     const anyStarted = results.some((r) => r.started);
 
+    const boostEmoji = config.emojis?.boost || '🚀';
+    const activateEmoji = config.emojis?.activate || boostEmoji;
     let finalContent = lines.join('\n');
     if (isDaily && anyStarted) {
-        finalContent = `**🚀 NEVERDIE AUTO DAILY QUEST เปิดใช้งานแล้ว**\n\n${finalContent}\n\nระบบได้ส่งข้อความสถานะสดไปยัง **DM (แชทส่วนตัว)** ของคุณเรียบร้อยแล้ว (หากปิดรับ DM ระบบจะส่งในห้องนี้แทน) และสามารถใช้ปุ่ม **STOP** เพื่อหยุดได้ตลอดเวลา`;
+        finalContent = `**${activateEmoji} AUTO DAILY QUEST เปิดใช้งานแล้ว**\n\n${finalContent}\n\nระบบได้ส่งข้อความสถานะสดไปยัง **DM (แชทส่วนตัว)** ของคุณเรียบร้อยแล้ว (หากปิดรับ DM ระบบจะส่งในห้องนี้แทน) และสามารถใช้ปุ่ม **STOP** เพื่อหยุดได้ตลอดเวลา`;
     } else if (anyStarted) {
-        finalContent = `**🚀 เริ่มต้นทำงาน ONE-SHOT QUEST แล้ว**\n\n${finalContent}\n\nระบบกำลังเริ่มทำเควสต์และส่งข้อความสถานะสดไปยัง **DM (แชทส่วนตัว)** ของคุณเรียบร้อยแล้ว (หากปิดรับ DM ระบบจะส่งในห้องนี้แทน)`;
+        finalContent = `**${activateEmoji} เริ่มต้นทำงาน ONE-SHOT QUEST แล้ว**\n\n${finalContent}\n\nระบบกำลังเริ่มทำเควสต์และส่งข้อความสถานะสดไปยัง **DM (แชทส่วนตัว)** ของคุณเรียบร้อยแล้ว (หากปิดรับ DM ระบบจะส่งในห้องนี้แทน)`;
     }
 
     return interaction.editReply({ content: finalContent });

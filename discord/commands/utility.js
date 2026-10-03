@@ -37,13 +37,13 @@ async function handleEmbed(interaction) {
 //  📢  SAY (Administrator only)
 // ════════════════════════════════════════════════════════════════════════════
 async function handleSay(interaction) {
-    if (!await requireMemberPermission(interaction, PermissionFlagsBits.Administrator, `> ${config.emojis.no_entry} ต้องเป็น Administrator เพื่อใช้คำสั่งนี้`)) return;
-    if (!await requireBotPermission(interaction, [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ViewChannel], `> ${config.emojis.error} บอทไม่มีสิทธิ์ส่งข้อความในช่องนี้ (ขาด SEND_MESSAGES หรือ VIEW_CHANNEL)`, interaction.channel)) return;
+    if (!await requireMemberPermission(interaction, PermissionFlagsBits.Administrator, `> ${config.emojis?.no_entry || "⛔"} ต้องเป็น Administrator เพื่อใช้คำสั่งนี้`)) return;
+    if (!await requireBotPermission(interaction, [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ViewChannel], `> ${config.emojis?.error || "❌"} บอทไม่มีสิทธิ์ส่งข้อความในช่องนี้ (ขาด SEND_MESSAGES หรือ VIEW_CHANNEL)`, interaction.channel)) return;
 
     const rawMsg = interaction.options.getString("message");
     const msg = sanitizeUserMessage(rawMsg, { maxLength: 2000 });
     if (!msg) return interaction.reply({
-        content: `> ${config.emojis.error} ข้อความว่างหรือถูกบล็อกทั้งหมด`,
+        content: `> ${config.emojis?.error || "❌"} ข้อความว่างหรือถูกบล็อกทั้งหมด`,
         ephemeral: true
     });
 
@@ -54,7 +54,7 @@ async function handleSay(interaction) {
         content: msg,
         allowedMentions: { parse: ["users", "roles", "everyone"], repliedUser: false }
     });
-    return interaction.editReply({ content: `> ${config.emojis.success} ส่งเรียบร้อย` });
+    return interaction.editReply({ content: `> ${config.emojis?.success || "✅"} ส่งเรียบร้อยแล้ว` });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -204,7 +204,7 @@ async function handleEmbedCreate(interaction) {
 
     const payload = buildEmbedCreatePayload(interaction);
     if (!payload) {
-        return interaction.reply({ content: `> ${config.emojis.error} เนื้อหาหลักของ Embed (description) ต้องไม่ว่าง`, ephemeral: true });
+        return interaction.reply({ content: `> ${config.emojis?.error || "❌"} เนื้อหาหลักของ Embed (description) ต้องไม่ว่างเปล่า`, ephemeral: true });
     }
 
     markCommandAccepted(interaction);
@@ -215,15 +215,15 @@ async function handleEmbedCreate(interaction) {
         const sentMsg = await targetChannel.send(payload);
 
         const successText = targetChannel.id === interaction.channel.id
-            ? `> ${config.emojis.success} สร้าง Embed และส่งเรียบร้อยแล้ว`
-            : `> ${config.emojis.success} สร้าง Embed และส่งไปยังห้อง <#${targetChannel.id}> เรียบร้อยแล้ว`;
+            ? `> ${config.emojis?.success || "✅"} สร้าง Embed และส่งเรียบร้อยแล้ว`
+            : `> ${config.emojis?.success || "✅"} สร้าง Embed และส่งไปยังห้อง <#${targetChannel.id}> เรียบร้อยแล้ว`;
 
         return interaction.editReply({
             content: sentMsg?.url ? `${successText} • [เปิดดูข้อความ](${sentMsg.url})` : successText
         });
-    } catch (err) {
+    } catch {
         return interaction.editReply({
-            content: `> ${config.emojis.error} สร้าง Embed ไม่สำเร็จ: ${err?.message || "เกิดข้อผิดพลาด"}`
+            content: `> ${config.emojis?.error || "❌"} สร้าง Embed ไม่สำเร็จ กรุณาตรวจสอบสิทธิ์ของบอทและลองใหม่อีกครั้ง`
         });
     }
 }
@@ -639,7 +639,7 @@ async function handleSteal(interaction, { delayMs = 1200 } = {}) {
     if (!await requireBotPermission(
         interaction,
         PermissionFlagsBits.ManageGuildExpressions,
-        `> ${config.emojis.error} บอทไม่มีสิทธิ์จัดการอิโมจิและสติกเกอร์ (ต้องการสิทธิ์ MANAGE_GUILD_EXPRESSIONS)`
+        `> ${config.emojis?.error || "❌"} บอทไม่มีสิทธิ์จัดการอิโมจิและสติกเกอร์ (ต้องการสิทธิ์ MANAGE_GUILD_EXPRESSIONS)`
     )) return;
 
     const validation = validateStealInput(interaction, interaction.options.getString("emojis"));

@@ -1,11 +1,9 @@
-/*
-================================================================================
-⚠️ [AI COGNITIVE DIRECTIVE] ⚠️
-DO NOT MODIFY: crashShieldReady flag logic.
-DO NOT REMOVE: process.on handlers — critical for stability.
-DO NOT SIMPLIFY: Log capture ring buffer — prevents RAM bloat.
-================================================================================
-*/
+/**
+ * System Stability & Process Lifecycle
+ * - Transient Gateway Crash Shield & global process error handlers.
+ * - In-memory log capture ring buffer (prevents RAM bloat).
+ * - Scheduled cron maintenance tasks and map pruning.
+ */
 
 const {
     sendAlertWebhook,

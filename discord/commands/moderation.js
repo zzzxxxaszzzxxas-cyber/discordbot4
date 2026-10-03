@@ -158,15 +158,15 @@ async function deleteChannelMessages(channel, amount, now = Date.now(), options 
 
 function buildClearLoadingEmbed(interaction, amt) {
     return new MessageEmbed()
-        .setColor(config.system.themeColors.info || "#5865F2")
-        .setDescription(`> ${config.emojis.loading} กำลังลบ ${amt.toLocaleString()} ข้อความ...`);
+        .setColor(config.system?.themeColors?.info || "#5865F2")
+        .setDescription(`> ${config.emojis?.loading || "⏳"} กำลังลบ ${amt.toLocaleString()} ข้อความ...`);
 }
 
 function buildClearResultEmbed(interaction, result) {
     if (result.deleted === 0) {
         return new MessageEmbed()
-            .setColor(config.system.themeColors.warning || "#FEE75C")
-            .setTitle(`${config.emojis.warning} ลบข้อความไม่สำเร็จ`)
+            .setColor(config.system?.themeColors?.warning || "#FEE75C")
+            .setTitle(`${config.emojis?.warning || "⚠️"} ลบข้อความไม่สำเร็จ`)
             .setDescription(
                 result.fetched === 0
                     ? `> ไม่พบข้อความให้ลบในช่องนี้`
@@ -175,13 +175,13 @@ function buildClearResultEmbed(interaction, result) {
     }
 
     const embed = new MessageEmbed()
-        .setColor(config.system.themeColors.success || "#57F287")
-        .setTitle(`${config.emojis.success} ลบข้อความเรียบร้อย`)
+        .setColor(config.system?.themeColors?.success || "#57F287")
+        .setTitle(`${config.emojis?.success || "✅"} ลบข้อความเรียบร้อย`)
         .setDescription(`> ลบข้อความใน <#${interaction.channel.id}> ไป **${result.deleted.toLocaleString()}** ข้อความ`);
 
     if (result.failed > 0) {
         embed.addFields([
-            { name: `${config.emojis.warning} ลบไม่ได้`, value: `\`${result.failed.toLocaleString()}\` ข้อความ`, inline: true }
+            { name: `${config.emojis?.warning || "⚠️"} ลบไม่ได้`, value: `\`${result.failed.toLocaleString()}\` ข้อความ`, inline: true }
         ]);
     }
 
@@ -201,27 +201,27 @@ function buildClearErrorEmbed(e) {
         errorMsg = "บอทไม่สามารถเข้าถึงช่องหรือประวัติข้อความได้";
     }
     return new MessageEmbed()
-        .setColor(config.system.themeColors.error || "#ED4245")
-        .setTitle(`${config.emojis.error} ลบข้อความไม่สำเร็จ`)
+        .setColor(config.system?.themeColors?.error || "#ED4245")
+        .setTitle(`${config.emojis?.error || "❌"} ลบข้อความไม่สำเร็จ`)
         .setDescription(`> ${errorMsg}`);
 }
 
 async function handleClear(interaction) {
     if (!await requireMemberPermission(interaction, PermissionFlagsBits.Administrator, `> ${config.emojis?.no_entry || "⛔"} คำสั่งนี้จำเป็นต้องใช้สิทธิ์ผู้ดูแลระบบ (Administrator) เท่านั้น`)) return;
-    if (!await requireBotPermission(interaction, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages], `> ${config.emojis.error} บอทไม่มีสิทธิ์ดูประวัติหรือลบข้อความในช่องนี้`, interaction.channel)) return;
+    if (!await requireBotPermission(interaction, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages], `> ${config.emojis?.error || "❌"} บอทไม่มีสิทธิ์ดูประวัติหรือลบข้อความในช่องนี้`, interaction.channel)) return;
 
     const amt = interaction.options.getInteger("amount");
     if (amt < 1 || amt > 1000) {
         const warnEmbed = new MessageEmbed()
-            .setColor(config.system.themeColors.warning || "#FEE75C")
-            .setDescription(`> ${config.emojis.warning} กรุณาระบุจำนวน 1-1,000 เท่านั้น`);
+            .setColor(config.system?.themeColors?.warning || "#FEE75C")
+            .setDescription(`> ${config.emojis?.warning || "⚠️"} กรุณาระบุจำนวน 1-1,000 เท่านั้น`);
         return interaction.reply({ embeds: [warnEmbed], ephemeral: true });
     }
 
     if (activeClearChannels.has(interaction.channel.id)) {
         const busyEmbed = new MessageEmbed()
-            .setColor(config.system.themeColors.warning || "#FEE75C")
-            .setDescription(`> ${config.emojis.warning} ห้องนี้กำลังลบข้อความอยู่ กรุณารอให้รอบเดิมเสร็จก่อน`);
+            .setColor(config.system?.themeColors?.warning || "#FEE75C")
+            .setDescription(`> ${config.emojis?.warning || "⚠️"} ห้องนี้กำลังลบข้อความอยู่ กรุณารอให้รอบเดิมเสร็จก่อน`);
         return interaction.reply({
             embeds: [busyEmbed],
             ephemeral: true

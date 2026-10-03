@@ -1302,7 +1302,7 @@ function buildVerificationDmEmbed(data = {}) {
         .setAuthor({ name: `${guildName} • Verification` })
         .setTitle(copy.title)
         .setDescription(copy.summary)
-        .setFooter({ text: "Phomueangtai • Verification" })
+        .setFooter({ text: "ระบบยืนยันตัวตน" })
         .setTimestamp();
     if (fields.length) embed.addFields(fields);
     if (isGuildIconUrl(data.guildIconUrl)) embed.setThumbnail(data.guildIconUrl);

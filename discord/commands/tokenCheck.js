@@ -30,19 +30,20 @@ function getTokenCheckBannerPath() {
 }
 
 function buildTokenCheckPanelEmbed({ hasAttachment = false } = {}) {
-    const primaryColor = config.system?.themeColors?.info || '#5865F2';
-    const searchEmoji = config.emojis?.search || '🔍';
+    const primaryColor = config.system?.themeColors?.primary || '#57F287';
+    const universeEmoji = config.emojis?.universe || '🔥';
+    const dreamworldEmoji = config.emojis?.dreamworld || '✨';
+    const ownerId = config.system?.ownerId || '661415152146710558';
 
     const embed = new MessageEmbed()
         .setColor(primaryColor)
-        .setTitle(`${searchEmoji} ตรวจสอบ Discord Token`)
+        .setTitle(`${universeEmoji} : Phomueangtai ตรวจสอบ Discord Token`)
         .setDescription(
-            `ตรวจสอบสถานะบัญชี Nitro, Boost และข้อมูลบัญชี\n\n` +
-            `รองรับการตรวจสอบหลาย Token พร้อมกัน (สูงสุด ${MAX_BATCH_TOKENS} Token)\n\n` +
-            `> *ผลลัพธ์จะแสดงเป็นข้อความส่วนตัวเฉพาะคุณเท่านั้น*`
-        )
-        .setFooter({ text: 'กดปุ่มด้านล่างเพื่อเปิดแบบฟอร์มกรอก Token' })
-        .setTimestamp();
+            `ระบบตรวจสอบ Discord Token อัตโนมัติ ${dreamworldEmoji}\n\n` +
+            `ตรวจสอบสถานะบัญชี Nitro, Boost และข้อมูลบัญชี ${dreamworldEmoji}\n\n` +
+            `ตั้งค่าใส่Tokenควบคุมผ่านปุ่มข้างล่าง ${dreamworldEmoji}\n\n` +
+            `*Developed by <@${ownerId}>*`
+        );
 
     if (hasAttachment) {
         embed.setImage(`attachment://${TOKEN_CHECK_BANNER_ATTACHMENT_NAME}`);
@@ -71,7 +72,7 @@ async function handleTokenCheckCommand(interaction) {
 
     if (!isBotOwner(interaction.user?.id)) {
         return safeReply(interaction, {
-            content: `${config.emojis?.no_entry || '⛔'} คำสั่งเปิดแผงควบคุม \`/token-check\` สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
+            content: `> ${config.emojis?.no_entry || '⛔'} คำสั่งเปิดแผงควบคุม \`/token-check\` สงวนสิทธิ์เฉพาะ **เจ้าของบอท (Bot Owner)** เท่านั้น`,
             flags: 64
         });
     }
@@ -120,14 +121,14 @@ async function handleTokenCheckModal(interaction) {
 
     if (tokens.length === 0) {
         return safeReply(interaction, {
-            content: `${config.emojis?.error || '❌'} ไม่พบข้อมูล Token กรุณากรอกอย่างน้อย 1 Token ในแบบฟอร์ม`,
+            content: `> ${config.emojis?.error || '❌'} ไม่พบข้อมูล Token กรุณากรอกอย่างน้อย 1 Token ในแบบฟอร์ม`,
             flags: 64
         });
     }
 
     if (tokens.length > MAX_BATCH_TOKENS) {
         return safeReply(interaction, {
-            content: `${config.emojis?.error || '❌'} รองรับการตรวจสอบสูงสุดครั้งละ **${MAX_BATCH_TOKENS} Token** กรุณาลดจำนวนแล้วลองใหม่อีกครั้ง`,
+            content: `> ${config.emojis?.error || '❌'} รองรับการตรวจสอบสูงสุดครั้งละ **${MAX_BATCH_TOKENS} Token** กรุณาลดจำนวนแล้วลองใหม่อีกครั้ง`,
             flags: 64
         });
     }
@@ -146,15 +147,18 @@ async function handleTokenCheckModal(interaction) {
             return await interaction.editReply({ content: null, embeds: [embed] });
         }
 
+        const loadingCircleEmoji = config.emojis?.loading_circle || loadingEmoji;
+        const loadingBarEmoji = config.emojis?.loading_bar || loadingCircleEmoji;
+
         await interaction.editReply({
-            content: `${loadingEmoji} กำลังตรวจสอบ...`
+            content: `${loadingCircleEmoji} กำลังตรวจสอบ...`
         }).catch(() => null);
 
         const batchData = await tokenChecker.checkBatchTokens(tokens, {
             delayMs: 150,
             onProgress: async (current, total) => {
                 await interaction.editReply({
-                    content: `${loadingEmoji} กำลังตรวจสอบ ${current}/${total}...`
+                    content: `${loadingBarEmoji} กำลังตรวจสอบ ${current}/${total}...`
                 }).catch(() => null);
             }
         });
@@ -163,7 +167,7 @@ async function handleTokenCheckModal(interaction) {
     } catch (error) {
         console.error('[TOKEN-CHECK] Verification failed:', error?.message || error);
         return await interaction.editReply({
-            content: `${config.emojis?.error || '❌'} ตรวจสอบ Token ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง`
+            content: `> ${config.emojis?.error || '❌'} ตรวจสอบ Token ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง`
         });
     }
 }
