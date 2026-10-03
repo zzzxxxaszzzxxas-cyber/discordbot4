@@ -887,7 +887,7 @@ async function handleSetupVerify(interaction) {
     const guildId = strictSnowflake(interaction.guild?.id);
 
     if (!guildId || !role) {
-        return interaction.editReply({ content: `> ${config.emojis.error} ไม่พบเซิร์ฟเวอร์หรือยศที่ถูกต้อง` });
+        return interaction.editReply({ content: `> ${config.emojis?.error || "❌"} ไม่พบเซิร์ฟเวอร์หรือยศที่ถูกต้อง` });
     }
 
     const preflight = await validateSetupChannelAndRole(interaction, channel, role);
@@ -901,7 +901,7 @@ async function handleSetupVerify(interaction) {
     try {
         panelOptions = parseVerificationPanelOptions(interaction, role, verifyType);
     } catch (err) {
-        return interaction.editReply({ content: `> ${config.emojis.error} ${err.safeMessage || "ข้อมูลแผงไม่ถูกต้อง"}` });
+        return interaction.editReply({ content: `> ${config.emojis?.error || "❌"} ${err.safeMessage || "ข้อมูลแผงไม่ถูกต้อง"}` });
     }
 
     const panelRevision = makePanelRevision("panel");
@@ -1060,7 +1060,7 @@ async function handleVerifyButton(interaction) {
     if (customId.startsWith("verify_oauth_")) {
         return interaction.reply({
             content:
-                `> แผงยืนยันนี้เป็นแผงเก่าแล้ว\n` +
+                `> ${config.emojis?.warning || "⚠️"} แผงยืนยันนี้เป็นแผงเก่าแล้ว\n` +
                 `> กรุณาให้แอดมินกดส่งแผงใหม่ หรือแก้แผงล่าสุดจากหน้า Dashboard`,
             ephemeral: true
         });

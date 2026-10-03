@@ -216,7 +216,7 @@ function buildServerLoadingEmbed(interaction) {
     const guildName = markdownText(interaction.guild?.name, "เซิร์ฟเวอร์นี้", 100);
     const embed = new MessageEmbed()
         .setColor(config.system.themeColors.primary)
-        .setTitle(`${config.emojis.signal || "🛰️"} กำลังสำรวจเซิร์ฟเวอร์`)
+        .setTitle(`${config.emojis?.signal || "🛰️"} กำลังสำรวจเซิร์ฟเวอร์`)
         .setDescription(`กำลังเปิดภาพรวมของ **${guildName}** และตรวจข้อมูลล่าสุดที่บอทมองเห็น`)
         .addField(
             "ขอบเขตที่กำลังตรวจสอบ",
@@ -235,11 +235,11 @@ function buildUserLoadingEmbed(interaction) {
     const targetLabel = user?.globalName || user?.username || "สมาชิก";
     const embed = new MessageEmbed()
         .setColor(config.system.themeColors.info)
-        .setTitle(`${config.emojis.search || "🔍"} กำลังเปิดแฟ้มข้อมูลสมาชิก`)
+        .setTitle(`${config.emojis?.search || "🔍"} กำลังเปิดแฟ้มข้อมูลสมาชิก`)
         .setDescription(`**${markdownText(targetLabel, "สมาชิก", 100)}**\nกำลังโหลดโปรไฟล์ล่าสุดจาก Discord และจับคู่กับข้อมูลในเซิร์ฟเวอร์นี้`)
         .addField(
             "กำลังจัดเรียงข้อมูล",
-            `${config.emojis.loading || "⏳"} โปรไฟล์และอายุบัญชี • ยศและสิทธิ์ • Timeout และสถานะสมาชิก`
+            `${config.emojis?.loading || "⏳"} โปรไฟล์และอายุบัญชี • ยศและสิทธิ์ • Timeout และสถานะสมาชิก`
         )
         .setFooter({ text: "แสดงเฉพาะข้อมูลที่บอทเข้าถึงได้ • ผลลัพธ์จะมาแทนที่ข้อความนี้" })
         .setTimestamp();
@@ -251,7 +251,7 @@ function buildUserLoadingEmbed(interaction) {
 function buildPingLoadingEmbed() {
     return new MessageEmbed()
         .setColor(config.system.themeColors.warning)
-        .setTitle(`${config.emojis.ping || "🏓"} กำลังจับสัญญาณระบบ`)
+        .setTitle(`${config.emojis?.ping || "🏓"} กำลังจับสัญญาณระบบ`)
         .setDescription(
             "```text\n" +
             "LATENCY   กำลังวัดการตอบกลับ\n" +

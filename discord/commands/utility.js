@@ -391,18 +391,18 @@ function getEmojiResultTheme(added, total) {
     if (added === total) {
         return {
             color: config.system.themeColors.success || "#57F287",
-            title: `${config.emojis.success} นำเข้าอิโมจิเรียบร้อย`
+            title: `${config.emojis?.success || "✅"} นำเข้าอิโมจิเรียบร้อย`
         };
     }
     if (added > 0) {
         return {
             color: config.system.themeColors.warning || "#FEE75C",
-            title: `${config.emojis.warning} นำเข้าอิโมจิบางส่วน`
+            title: `${config.emojis?.warning || "⚠️"} นำเข้าอิโมจิบางส่วน`
         };
     }
     return {
         color: config.system.themeColors.error || "#ED4245",
-        title: `${config.emojis.error} นำเข้าอิโมจิไม่สำเร็จ`
+        title: `${config.emojis?.error || "❌"} นำเข้าอิโมจิไม่สำเร็จ`
     };
 }
 
@@ -424,14 +424,14 @@ function buildEmojiResultFields({ createdStatic, createdAnimated, skippedEmojis,
     }
     if (skippedEmojis.length > 0) {
         fields.push({
-            name: `${config.emojis.warning || "⚠️"} ข้ามเนื่องจากโควตาเต็ม · ${skippedEmojis.length} ตัว`,
+            name: `${config.emojis?.warning || "⚠️"} ข้ามเนื่องจากโควตาเต็ม · ${skippedEmojis.length} ตัว`,
             value: formatSkippedEmojiList(skippedEmojis) || "—",
             inline: false
         });
     }
     if (failedEmojis.length > 0) {
         fields.push({
-            name: `${config.emojis.error || "❌"} รายการที่ไม่สำเร็จ · ${failedEmojis.length} ตัว`,
+            name: `${config.emojis?.error || "❌"} รายการที่ไม่สำเร็จ · ${failedEmojis.length} ตัว`,
             value: formatFailedEmojiList(failedEmojis) || "—",
             inline: false
         });
@@ -478,7 +478,7 @@ function validateStealInput(interaction, rawText) {
             noticeEmbed: buildEmojiNoticeEmbed({
                 title: "ไม่พบอิโมจิ Custom ในข้อความที่ระบุ",
                 description:
-                    `> ${config.emojis.warning} กรุณาวางอิโมจิที่เป็น Custom ของ Discord เช่น \`<:name:id>\` หรือ \`<a:name:id>\`\n` +
+                    `> ${config.emojis?.warning || "⚠️"} กรุณาวางอิโมจิที่เป็น Custom ของ Discord เช่น \`<:name:id>\` หรือ \`<a:name:id>\`\n` +
                     `> 💡 *ไม่รองรับอิโมจิมาตรฐานของระบบ (Unicode Standard Emojis เช่น 😀, 🎉)*`,
                 color: config.system.themeColors.warning || "#FEE75C",
                 guild: interaction.guild,
@@ -494,7 +494,7 @@ function validateStealInput(interaction, rawText) {
             noticeEmbed: buildEmojiNoticeEmbed({
                 title: "จำนวนอิโมจิเกินขีดจำกัด",
                 description:
-                    `> ${config.emojis.error} สามารถนำเข้าได้สูงสุด **50 ตัว** ต่อครั้ง (คุณระบุมา \`${matches.length}\` ตัว)\n` +
+                    `> ${config.emojis?.error || "❌"} สามารถนำเข้าได้สูงสุด **50 ตัว** ต่อครั้ง (คุณระบุมา \`${matches.length}\` ตัว)\n` +
                     `> 💡 *กรุณาแบ่งการนำเข้าเป็นชุดละไม่เกิน 50 ตัว*`,
                 color: config.system.themeColors.error || "#ED4245",
                 guild: interaction.guild,
@@ -510,7 +510,7 @@ function validateStealInput(interaction, rawText) {
             noticeEmbed: buildEmojiNoticeEmbed({
                 title: "เซิร์ฟเวอร์กำลังดำเนินการคัดลอกอิโมจิอยู่",
                 description:
-                    `> ${config.emojis.warning} มีกระบวนการคัดลอกอิโมจิกำลังทำงานอยู่ในเซิร์ฟเวอร์นี้\n` +
+                    `> ${config.emojis?.warning || "⚠️"} มีกระบวนการคัดลอกอิโมจิกำลังทำงานอยู่ในเซิร์ฟเวอร์นี้\n` +
                     `> 💡 *กรุณารอให้กระบวนการก่อนหน้าเสร็จสิ้นก่อนเริ่มคำสั่งใหม่*`,
                 color: config.system.themeColors.warning || "#FEE75C",
                 guild: interaction.guild,
@@ -574,7 +574,7 @@ async function maybeReportCopyProgress(interaction, { processed, total }) {
     if (!isSmallBatch && !isPeriodic) return;
 
     await interaction.editReply({
-        content: `${config.emojis.loading} กำลังนำเข้าอิโมจิ (${processed}/${total})`,
+        content: `${config.emojis?.loading_bar || config.emojis?.loading || "⏳"} กำลังนำเข้าอิโมจิ (${processed}/${total})`,
         embeds: []
     }).catch(() => {});
 }
@@ -593,7 +593,7 @@ async function executeEmojiCopyWorkflow(interaction, { matches, quotas, delayMs 
     };
 
     await interaction.editReply({
-        content: `${config.emojis.loading} กำลังนำเข้าอิโมจิ (0/${matches.length})`,
+        content: `${config.emojis?.loading_bar || config.emojis?.loading || "⏳"} กำลังนำเข้าอิโมจิ (0/${matches.length})`,
         embeds: []
     }).catch(() => {});
 

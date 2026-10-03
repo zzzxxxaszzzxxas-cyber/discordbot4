@@ -73,7 +73,7 @@ function buildQuestSummaryEmbed({
         title = `${config.emojis?.red_card || config.emojis?.error || '❌'} ไม่สามารถทำ Quest ได้สำเร็จ`;
         summary = 'ระบบไม่สามารถดำเนินการทำ Quest ให้สำเร็จได้ กรุณาตรวจสอบ Token และสิทธิ์ของบัญชี';
     } else {
-        title = 'ℹ️ ไม่พบ Quest ที่ต้องดำเนินการ';
+        title = `${config.emojis?.alert || 'ℹ️'} ไม่พบ Quest ที่ต้องดำเนินการ`;
         summary = isDaily
             ? 'ระบบ Auto Daily ได้ตรวจสอบบัญชีแล้ว แต่ไม่พบ Quest ใหม่ที่สามารถทำได้ในรอบนี้'
             : 'ไม่พบ Quest ที่สามารถทำได้ในบัญชีนี้ในขณะนี้';
@@ -100,7 +100,7 @@ function buildQuestSummaryEmbed({
     if (issues.length > 0) {
         const issueLines = issues.slice(0, 5).map((iss) => `• ${markdownText(iss.name)}: ${markdownText(iss.reason)}`).join('\n');
         fields.push({
-            name: '⚠️ รายการที่พบปัญหา',
+            name: `${config.emojis?.warning || '⚠️'} รายการที่พบปัญหา`,
             value: safeText(issueLines, 'มีข้อผิดพลาดบางรายการ', 1024)
         });
     }
@@ -191,7 +191,7 @@ function buildQuestStoppedEmbed({
                 inline: true
             },
             {
-                name: '🛑 เหตุผลที่หยุด',
+                name: `${config.emojis?.stop || '🛑'} เหตุผลที่หยุด`,
                 value: markdownText(reason),
                 inline: true
             }

@@ -93,30 +93,30 @@ async function requireBotPermission(interaction, permissions, content, channel =
 
 function checkRoleHierarchy({ interaction, target, client, config }) {
     if (!target) {
-        return { ok: false, content: `> ${config.emojis.no_entry} ไม่พบเป้าหมาย!` };
+        return { ok: false, content: `> ${config?.emojis?.no_entry || "⛔"} ไม่พบเป้าหมาย!` };
     }
 
     if (target.id === interaction.user.id) {
-        return { ok: false, content: `> ${config.emojis.warning} คุณไม่สามารถทำโทษตัวเองได้!` };
+        return { ok: false, content: `> ${config?.emojis?.warning || "⚠️"} คุณไม่สามารถทำโทษตัวเองได้!` };
     }
 
     if (target.id === client.user.id) {
-        return { ok: false, content: `> ${config.emojis.warning} คุณไม่สามารถทำโทษบอทระบบได้!` };
+        return { ok: false, content: `> ${config?.emojis?.warning || "⚠️"} คุณไม่สามารถทำโทษบอทระบบได้!` };
     }
 
     if (target.id === interaction.guild.ownerId) {
-        return { ok: false, content: `> ${config.emojis.no_entry} ไม่สามารถทำโทษเจ้าของเซิร์ฟเวอร์ได้!` };
+        return { ok: false, content: `> ${config?.emojis?.no_entry || "⛔"} ไม่สามารถทำโทษเจ้าของเซิร์ฟเวอร์ได้!` };
     }
 
     if (
         target.roles.highest.position >= interaction.member.roles.highest.position &&
         interaction.user.id !== interaction.guild.ownerId
     ) {
-        return { ok: false, content: `> ${config.emojis.no_entry} คุณไม่สามารถทำโทษผู้ที่มียศสูงกว่าหรือเท่ากับคุณได้!` };
+        return { ok: false, content: `> ${config?.emojis?.no_entry || "⛔"} คุณไม่สามารถทำโทษผู้ที่มียศสูงกว่าหรือเท่ากับคุณได้!` };
     }
 
     if (target.roles.highest.position >= interaction.guild.members.me.roles.highest.position) {
-        return { ok: false, content: `> ${config.emojis.error} ยศของบอทต่ำกว่าเป้าหมาย ไม่สามารถทำโทษได้!` };
+        return { ok: false, content: `> ${config?.emojis?.error || "❌"} ยศของบอทต่ำกว่าเป้าหมาย ไม่สามารถทำโทษได้!` };
     }
 
     return { ok: true };

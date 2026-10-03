@@ -487,7 +487,7 @@ function formatMultiTokenResult(tokensCount, successes, failures, voiceLabel) {
     }
 
     if (failures.length > 0) {
-        responseContent += `> ${config.emojis.warning || "⚠️"} รายการที่ล้มเหลว (${failures.length} บัญชี):\n` +
+        responseContent += `> ${config.emojis?.warning || "⚠️"} รายการที่ล้มเหลว (${failures.length} บัญชี):\n` +
             failures.map(f => `• ลำดับที่ ${f.index}: ${f.reason}`).join("\n") + "\n";
     }
 

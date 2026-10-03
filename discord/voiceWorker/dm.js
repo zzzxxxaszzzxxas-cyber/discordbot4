@@ -166,14 +166,14 @@ function buildVoiceEventEmbed(snapshot, profile = null) {
     const view = EVENT_VIEW[snapshot.type] || { color: "#5865F2", title: "🔔 แจ้งเตือนระบบช่องเสียง", status: "ℹ️ มีการเปลี่ยนแปลง" };
     const fields = [
         { name: "📍 สถานะ", value: view.status },
-        { name: "🏠 เซิร์ฟเวอร์", value: formatGuildField(snapshot.guildName, snapshot.guildId), inline: true },
-        { name: "🔊 ช่องเป้าหมาย", value: formatChannelField(snapshot.targetChannelName, snapshot.targetChannelId, snapshot.guildId), inline: true }
+        { name: `${config.emojis?.server_icon || "🏠"} เซิร์ฟเวอร์`, value: formatGuildField(snapshot.guildName, snapshot.guildId), inline: true },
+        { name: `${config.emojis?.voice_ch || "🔊"} ช่องเป้าหมาย`, value: formatChannelField(snapshot.targetChannelName, snapshot.targetChannelId, snapshot.guildId), inline: true }
     ];
 
     if (snapshot.actualChannelId) {
         const verified = snapshot.actualChannelSource === "voice_state";
         fields.push({
-            name: verified ? "✅ ช่องที่อ่านจากสถานะเสียง" : "ℹ️ ช่องจากสถานะการเชื่อมต่อ",
+            name: verified ? `${config.emojis?.check_alt || config.emojis?.success || "✅"} ช่องที่อ่านจากสถานะเสียง` : `${config.emojis?.alert || "ℹ️"} ช่องจากสถานะการเชื่อมต่อ`,
             value: formatActualChannelField(snapshot.actualChannelId, snapshot.guildId),
             inline: true
         });

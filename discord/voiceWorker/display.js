@@ -169,7 +169,7 @@ function buildVoiceFields(session, extra = {}) {
     ];
 
     if (session.reconnectCount > 0) {
-        fields.push({ name: "🔄 Reconnect", value: `${session.reconnectCount} ครั้ง`, inline: true });
+        fields.push({ name: `${config.emojis?.loading_circle || config.emojis?.loading || "🔄"} Reconnect`, value: `${session.reconnectCount} ครั้ง`, inline: true });
     }
 
     if (extra.reason) {
