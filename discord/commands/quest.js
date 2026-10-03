@@ -172,7 +172,7 @@ async function buildStopPanelPayload(ownerId, notice = null) {
         new MessageButton()
             .setCustomId(IDS.BTN_QUEST_REFRESH)
             .setLabel('Refresh')
-            .setEmoji('🔄')
+            .setEmoji(config.emojis?.loading_circle || config.emojis?.loading || '🔄')
             .setStyle('SECONDARY'),
         new MessageButton()
             .setCustomId(IDS.BTN_QUEST_STOP_ALL)
@@ -239,10 +239,10 @@ async function handleQuestButton(interaction) {
     if (customId === IDS.BTN_QUEST_REFRESH) {
         if (typeof interaction.deferUpdate === 'function') {
             await interaction.deferUpdate();
-            const payload = await buildStopPanelPayload(interaction.user.id, '🔄 อัปเดตสถานะแล้ว');
+            const payload = await buildStopPanelPayload(interaction.user.id, `${config.emojis?.loading_circle || config.emojis?.loading || '🔄'} อัปเดตสถานะแล้ว`);
             return interaction.editReply(payload);
         }
-        const payload = await buildStopPanelPayload(interaction.user.id, '🔄 อัปเดตสถานะแล้ว');
+        const payload = await buildStopPanelPayload(interaction.user.id, `${config.emojis?.loading_circle || config.emojis?.loading || '🔄'} อัปเดตสถานะแล้ว`);
         return interaction.update(payload);
     }
 

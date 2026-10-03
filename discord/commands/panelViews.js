@@ -94,7 +94,7 @@ function buildVoiceStatusControls(current, page) {
             new MessageButton()
                 .setCustomId(`${PREFIXES.STATUS_RECONNECT}${current.sessionId}`)
                 .setLabel("เชื่อมต่อใหม่")
-                .setEmoji("🔄")
+                .setEmoji(config.emojis?.loading_circle || config.emojis?.loading || "🔄")
                 .setStyle("SUCCESS")
         );
     }
