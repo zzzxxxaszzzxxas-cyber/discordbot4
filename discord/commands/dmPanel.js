@@ -321,7 +321,7 @@ async function handleDmPanelModal(interaction) {
 
     const confirmEmbed = new MessageEmbed()
         .setColor(config.system?.themeColors?.warning || '#FEE75C')
-        .setTitle('📋 ตรวจสอบและยืนยันการกระจายข้อความ DM')
+        .setTitle(`${config.emojis?.check_alt || config.emojis?.shield || '📋'} ตรวจสอบและยืนยันการกระจายข้อความ DM`)
         .setDescription('ระบบได้ตรวจสอบความพร้อมของบอทตัวรองเรียบร้อยแล้ว กรุณาตรวจสอบข้อมูลด้านล่างก่อนกดยืนยันเริ่มส่ง:')
         .addFields(
             { name: '🤖 บอทตัวรอง', value: `\`${checkResult.botUser.tag}\` (\`${checkResult.botUser.id}\`)`, inline: true },

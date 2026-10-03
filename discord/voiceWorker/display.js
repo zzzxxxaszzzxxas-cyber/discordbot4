@@ -173,7 +173,7 @@ function buildVoiceFields(session, extra = {}) {
     }
 
     if (extra.reason) {
-        fields.push({ name: "📋 สาเหตุ", value: extra.reason });
+        fields.push({ name: `${config.emojis?.alert || config.emojis?.warning || "⚠️"} สาเหตุ`, value: extra.reason });
     }
 
     if (extra.action) {
