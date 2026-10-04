@@ -798,3 +798,347 @@ test("oauthTokenManager: getOwnerTokenMetadata returns non-cryptographic token s
   expect(metadata.oauth.encryptedAccessToken).toBeUndefined();
   expect(metadata.oauth.encryptedRefreshToken).toBeUndefined();
 });
+
+test("oauthTokenManager: validateTokenData rejects whitespace-only access_token and refresh_token", () => {
+  expect(() => manager._test.validateTokenData({
+    access_token: "   ",
+    refresh_token: "valid-refresh",
+    expires_in: 3600
+  })).toThrow(/missing or invalid access_token/);
+
+  expect(() => manager._test.validateTokenData({
+    access_token: "valid-access",
+    refresh_token: "   \t\n  ",
+    expires_in: 3600
+  })).toThrow(/missing or invalid refresh_token/);
+});
+
+test("oauthTokenManager: getAccessToken propagates marginMs and deterministic now to refresh check", async () => {
+  const encRefresh = encryptToken("refresh-margin");
+  const encAccess = encryptToken("access-margin");
+  const now = 1000000;
+  const expiresAt = now + 30 * 60 * 1000; // 30 minutes remaining
+  const doc = {
+    _id: "doc-margin",
+    discord: { userId: "user-margin" },
+    oauth: {
+      encryptedAccessToken: encAccess,
+      encryptedRefreshToken: encRefresh,
+      expiresAt,
+      version: 1,
+      revokedAt: null
+    }
+  };
+
+  const model = {
+    findOne: jest.fn(() => ({
+      select: () => ({
+        lean: () => Promise.resolve(doc)
+      })
+    })),
+    findById: jest.fn(() => freshQuery(() => doc)),
+    updateOne: jest.fn(() => Promise.resolve({ modifiedCount: 1 }))
+  };
+
+  const discord = {
+    refreshToken: jest.fn(() => Promise.resolve({
+      access_token: "refreshed-new-access",
+      refresh_token: "refreshed-new-refresh",
+      expires_in: 3600
+    }))
+  };
+
+  // Calling with 1 hour margin (60m > 30m, so isDue is true and refresh triggers)
+  const res = await manager.getAccessToken({
+    userId: "user-margin",
+    tokenField: "oauth",
+    marginMs: 60 * 60 * 1000,
+    now,
+    model,
+    discord
+  });
+
+  expect(res.ok).toBe(true);
+  expect(res.refreshed).toBe(true);
+  expect(res.accessToken).toBe("refreshed-new-access");
+  expect(discord.refreshToken).toHaveBeenCalled();
+});
+
+test("oauthTokenManager: refresh wins race before revoke finishes; revoke still leaves final state revoked", async () => {
+  const encRefresh = encryptToken("refresh-race-token");
+  const encAccess = encryptToken("access-race-token");
+  const doc = {
+    _id: "doc-race-winner",
+    discord: { userId: "user-race-winner" },
+    oauth: {
+      encryptedAccessToken: encAccess,
+      encryptedRefreshToken: encRefresh,
+      expiresAt: 50000,
+      version: 3,
+      revokedAt: null
+    }
+  };
+
+  let dbVersion = 3;
+  let dbRevokedAt = null;
+
+  const model = {
+    findOne: jest.fn(() => ({
+      select: () => Promise.resolve({
+        ...doc,
+        oauth: {
+          ...doc.oauth,
+          version: dbVersion,
+          revokedAt: dbRevokedAt
+        }
+      })
+    })),
+    updateOne: jest.fn((filter, update) => {
+      // Simulate CAS: if filter requires version 3, but concurrent refresh changed it to 4:
+      if (filter["oauth.version"] !== undefined && filter["oauth.version"] !== dbVersion) {
+        return Promise.resolve({ modifiedCount: 0 });
+      }
+      if (update.$set && update.$set["oauth.revokedAt"]) {
+        dbRevokedAt = update.$set["oauth.revokedAt"];
+      }
+      if (update.$inc && update.$inc["oauth.version"]) {
+        dbVersion += update.$inc["oauth.version"];
+      }
+      return Promise.resolve({ modifiedCount: 1 });
+    })
+  };
+
+  const discord = {
+    revokeToken: jest.fn(() => {
+      // Concurrent refresh finished while Discord revoke endpoint was in flight
+      dbVersion = 4;
+      return Promise.resolve();
+    })
+  };
+
+  const outcome = await manager.revokeToken({
+    userId: "user-race-winner",
+    tokenField: "oauth",
+    model,
+    discord,
+    now: 99999
+  });
+
+  expect(outcome.ok).toBe(true);
+  expect(outcome.revoked).toBe(true);
+  expect(outcome.updated).toBe(true);
+  expect(dbRevokedAt).toBe(99999);
+  expect(dbVersion).toBeGreaterThanOrEqual(4);
+});
+
+test("oauthTokenManager: listAccessTokenCandidates returns nextCursor and hasMore pagination metadata", async () => {
+  const encRefresh = encryptToken("valid-refresh");
+  const docs = [
+    {
+      _id: "doc-page-1",
+      discord: { userId: "user-page-1" },
+      oauth: {
+        encryptedRefreshToken: encRefresh,
+        scope: "identify guilds.join",
+        revokedAt: null,
+        refreshFailCount: 0
+      }
+    },
+    {
+      _id: "doc-page-2",
+      discord: { userId: "user-page-2" },
+      oauth: {
+        encryptedRefreshToken: encRefresh,
+        scope: "identify email", // missing guilds.join
+        revokedAt: null,
+        refreshFailCount: 0
+      }
+    }
+  ];
+
+  const model = {
+    find: jest.fn(() => scanQuery(docs))
+  };
+
+  const page = await manager.listAccessTokenCandidates({
+    requiredScopes: ["guilds.join"],
+    limit: 2,
+    model
+  });
+
+  expect(Array.isArray(page)).toBe(true);
+  expect(page.length).toBe(1);
+  expect(page.nextCursor).toBe("doc-page-2");
+  expect(page.hasMore).toBe(true);
+  expect(page.scanned).toBe(2);
+  expect(page.candidates.length).toBe(1);
+});
+
+test("oauthTokenManager: getOwnerTokenState, getOwnerTokenMetadata, and getRecoveryStatuses exclude soft-deleted users", async () => {
+  const encAccess = encryptToken("access-secret");
+  const encRefresh = encryptToken("refresh-secret");
+  const activeDoc = {
+    discord: { userId: "active-user" },
+    deletedAt: null,
+    oauth: {
+      encryptedAccessToken: encAccess,
+      encryptedRefreshToken: encRefresh,
+      scope: "identify guilds.join",
+      expiresAt: Date.now() + 60000
+    }
+  };
+
+  const model = {
+    findOne: jest.fn((filter) => ({
+      select: () => ({
+        lean: () => {
+          if (filter["discord.userId"] === "deleted-user") return Promise.resolve(null);
+          return Promise.resolve(activeDoc);
+        }
+      })
+    })),
+    find: jest.fn((filter) => ({
+      select: () => ({
+        lean: () => {
+          return Promise.resolve([activeDoc]);
+        }
+      })
+    }))
+  };
+
+  const stateActive = await manager.getOwnerTokenState("active-user", { model });
+  expect(stateActive.oauth.accessToken).toBe("access-secret");
+
+  const stateDeleted = await manager.getOwnerTokenState("deleted-user", { model });
+  expect(stateDeleted.oauth.accessToken).toBeNull();
+
+  const metadataDeleted = await manager.getOwnerTokenMetadata("deleted-user", { model });
+  expect(metadataDeleted.oauth.hasAccessToken).toBe(false);
+
+  const recoveryMap = await manager.getRecoveryStatuses(["active-user", "deleted-user"], { model });
+  const deletedRecovery = recoveryMap.get("deleted-user");
+  expect(deletedRecovery.reasons).toContain("missing_access_token");
+});
+
+test("oauthTokenManager: getRecoveryStatuses flags refresh_exhausted when refreshFailCount >= failMax", async () => {
+  const encAccess = encryptToken("valid-access");
+  const encRefresh = encryptToken("valid-refresh");
+  const doc = {
+    discord: { userId: "user-exhausted" },
+    oauth: {
+      encryptedAccessToken: encAccess,
+      encryptedRefreshToken: encRefresh,
+      scope: "identify email connections guilds guilds.members.read guilds.join",
+      expiresAt: Date.now() + 60000,
+      refreshFailCount: 5,
+      revokedAt: null
+    }
+  };
+
+  const model = {
+    find: jest.fn(() => ({
+      select: () => ({
+        lean: () => Promise.resolve([doc])
+      })
+    }))
+  };
+
+  const recoveryMap = await manager.getRecoveryStatuses(["user-exhausted"], {
+    model,
+    failMax: 5
+  });
+
+  const recovery = recoveryMap.get("user-exhausted");
+  expect(recovery.reasons).toContain("refresh_exhausted");
+  expect(recovery.reasonLabels).toContain("Refresh ล้มเหลวถึงจำนวนสูงสุด");
+});
+
+test("joinCampaign: processAllCandidateBatches continues across batches even when first batch yields zero candidates", async () => {
+  const batch1 = [
+    {
+      _id: "batch1-doc1",
+      discord: { userId: "b1-u1" },
+      oauth: { scope: "identify email" }
+    }
+  ];
+  Object.assign(batch1, {
+    candidates: [],
+    nextCursor: "batch1-doc1",
+    hasMore: true,
+    scanned: 1
+  });
+
+  const batch2 = [
+    {
+      _id: "batch2-doc1",
+      recordId: "batch2-doc1",
+      userId: "b2-u1",
+      tokenField: "oauth",
+      scope: "identify guilds.join"
+    }
+  ];
+  Object.assign(batch2, {
+    candidates: batch2,
+    nextCursor: "batch2-doc1",
+    hasMore: false,
+    scanned: 1
+  });
+
+  const loadCandidateDocs = jest.fn(async ({ afterId }) => {
+    if (!afterId) return batch1;
+    if (afterId === "batch1-doc1") return batch2;
+    return [];
+  });
+
+  const processed = [];
+  const fakeTokenManager = {
+    getAccessToken: async ({ userId }) => {
+      processed.push(userId);
+      return { ok: true, accessToken: "token-" + userId, refreshed: false };
+    }
+  };
+
+  const summary = {
+    campaignId: "test-pag",
+    status: "running",
+    scannedRecords: 0,
+    uniqueUsers: 0,
+    usableUsers: 0,
+    missingScope: 0,
+    missingUserId: 0,
+    byTokenField: { oauth: 0, adminOAuth: 0 },
+    joined: 0,
+    alreadyMember: 0,
+    failed: 0,
+    refreshed: 0,
+    refreshFailed: 0,
+    persistenceFailed: 0,
+    refreshStateConflicts: 0,
+    tokenInvalid: 0,
+    botMissingPermission: 0,
+    rateLimited: 0,
+    discordError: 0,
+    stopped: false,
+    batches: 0,
+    dryRun: false
+  };
+
+  const context = {
+    config: { batchSize: 1, delayMs: 0, progressEvery: 10 },
+    targetGuildId: "123456789012345678",
+    discord: {
+      getGuildMemberWithBot: async () => null,
+      addMemberToGuild: async () => ({ ok: true, status: 201 })
+    }
+  };
+
+  const joinCampaign = require("../discord/features/joinCampaign");
+  await joinCampaign._test.processAllCandidateBatches(summary, context, {
+    loadCandidateDocs,
+    oauthTokenManager: fakeTokenManager
+  });
+
+  expect(loadCandidateDocs).toHaveBeenCalledTimes(2);
+  expect(processed).toEqual(["b2-u1"]);
+  expect(summary.joined).toBe(1);
+});

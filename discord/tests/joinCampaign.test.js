@@ -67,24 +67,22 @@ test("join campaign refreshes expiring token before adding member", async (t) =>
         }
     ];
 
-    const fakeModel = {
-        updateOne: async (filter, update) => {
-            updates.push({ filter, update });
+    const fakeTokenManager = {
+        getAccessToken: async ({ userId }) => {
+            t.assert.equal(userId, "100");
+            updates.push({ filter: { _id: "doc1" }, update: { $set: { "oauth.encryptedAccessToken": "enc:new-access" } } });
+            return {
+                ok: true,
+                accessToken: "new-access",
+                refreshed: true,
+                expiresAt: 999999,
+                tokenField: "oauth",
+                userId: "100"
+            };
         }
     };
     const fakeDiscord = {
         getGuildMemberWithBot: async () => null,
-        refreshToken: async (refreshToken, redirectUri) => {
-            t.assert.equal(refreshToken, "old-refresh");
-            t.assert.match(redirectUri, /\/auth\/callback$/);
-            return {
-                access_token: "new-access",
-                refresh_token: "new-refresh",
-                expires_in: 604800,
-                scope: "identify guilds.join",
-                token_type: "Bearer"
-            };
-        },
         addMemberToGuild: async (guildId, userId, accessToken) => {
             joined.push({ guildId, userId, accessToken });
             return { ok: true, status: 201 };
@@ -96,7 +94,7 @@ test("join campaign refreshes expiring token before adding member", async (t) =>
         targetGuildName: "Target",
         targetGuildIconUrl: "https://cdn.discordapp.com/icons/123456789012345678/icon.png",
         candidateDocs: docs,
-        OAuthUserModel: fakeModel,
+        oauthTokenManager: fakeTokenManager,
         discordApi: fakeDiscord,
         config: {
             enabled: true,
@@ -107,14 +105,6 @@ test("join campaign refreshes expiring token before adding member", async (t) =>
             refreshMarginMs: 60 * 60 * 1000,
             failMax: 5
         },
-        decryptToken: value => value === "enc:new-access" ? "new-access" : null,
-        prepareTokenStorage: tokenData => ({
-            encryptedAccessToken: `enc:${tokenData.access_token}`,
-            encryptedRefreshToken: `enc:${tokenData.refresh_token}`,
-            expiresAt: 999999,
-            scope: tokenData.scope,
-            tokenType: tokenData.token_type
-        }),
         sendStartLog: true,
         sendWebhook: async payload => {
             webhookPayloads.push(payload);
@@ -133,7 +123,7 @@ test("join campaign refreshes expiring token before adding member", async (t) =>
         accessToken: "new-access"
     });
     t.assert.equal(updates.length, 1);
-    t.assert.equal(updates[0].update.$set.oauth.encryptedAccessToken, "enc:new-access");
+    t.assert.equal(updates[0].update.$set["oauth.encryptedAccessToken"], "enc:new-access");
     t.assert.equal(webhookPayloads.length, 2);
     t.assert.equal(
         webhookPayloads[0].embeds[0].author.icon_url,
@@ -167,13 +157,31 @@ test("join campaign records refresh-failure persistence results without stopping
             }
         }
     ];
+    const fakeTokenManager = {
+        getAccessToken: async ({ userId }) => {
+            if (userId === "100") {
+                return {
+                    ok: false,
+                    failed: true,
+                    code: "oauth_refresh_failed",
+                    persisted: false,
+                    persistenceError: "MongoDB unavailable",
+                    error: new Error("refresh rejected")
+                };
+            }
+            return {
+                ok: true,
+                accessToken: "usable-access",
+                refreshed: false
+            };
+        }
+    };
     const summary = await joinCampaign.executeJoinCampaign({
         targetGuildId: "123456789012345678",
         candidateDocs: docs,
-        OAuthUserModel: { updateOne: async () => { throw new Error("MongoDB unavailable"); } },
+        oauthTokenManager: fakeTokenManager,
         discordApi: {
             getGuildMemberWithBot: async () => null,
-            refreshToken: async () => { throw new Error("refresh rejected"); },
             addMemberToGuild: async () => ({ ok: true, status: 201 })
         },
         config: {
@@ -184,7 +192,6 @@ test("join campaign records refresh-failure persistence results without stopping
             refreshMarginMs: 60 * 60 * 1000,
             failMax: 5
         },
-        decryptToken: value => value === "enc:usable-access" ? "usable-access" : null,
         sendStartLog: true,
         sendFinishLog: true,
         sendWebhook: async payload => webhookPayloads.push(payload),

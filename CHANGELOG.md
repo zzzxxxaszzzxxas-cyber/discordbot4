@@ -2,18 +2,23 @@
 
 ## [Unreleased] - 2026-10-04
 
-- **OAuth Token Lifecycle Consolidation (`discord/core/oauthTokenManager.js`):**
+- **OAuth Token Lifecycle Consolidation & Audit Remediation (`discord/core/oauthTokenManager.js`, `discord/features/joinCampaign.js`):**
   - Consolidated all fragmented OAuth2 token operations across verification, campaigns, and recovery into a Single Authority: `discord/core/oauthTokenManager.js`.
-  - Replaced legacy `oauthTokenLifecycle.js` with comprehensive token manager managing: authorization code exchange, atomic OAuthUser activation commit plus compensating snapshot rollback, AES-256-GCM (`v3:gcm:`) encryption/decryption, transparent near-expiry refresh with per-user deduplication locks (`withTokenRefreshLock`), candidate selection (`listAccessTokenCandidates`), background refresh sweeps, recovery evaluation (`getRecoveryStatuses`), safe token metadata status DTOs (`getOwnerTokenMetadata`), and token revocation (`revokeToken`).
+  - Resolved Join Campaign pagination defect: `listAccessTokenCandidates()` now returns cursor metadata `{ candidates, nextCursor, hasMore, scanned }` derived from the last MongoDB document scanned. `processAllCandidateBatches()` in `discord/features/joinCampaign.js` continues across batches via `nextCursor` while `hasMore`, eliminating premature campaign termination when early batches have 0 candidates.
+  - Completely purged legacy token crypto, raw `OAuthUser` model imports, candidate query builder, and mock refresh routines from `joinCampaign.js`.
+  - Fixed refresh margin propagation bug: `getAccessToken()` now forwards caller-specified `marginMs` and deterministic `now` into `performTokenRefreshUnderLock()`, ensuring margins like `JOIN_CAMPAIGN_REFRESH_MARGIN_MS` (1h) take effect accurately.
+  - Closed revoke-vs-refresh concurrency race: `revokeToken()` acquires `withTokenRefreshLock` and applies unconditional fallback update if CAS misses, guaranteeing revocation precedence over in-flight refreshes.
+  - Added strict whitespace token validation in `validateTokenData()`, rejecting empty or whitespace-only access and refresh tokens.
+  - Enforced soft-delete isolation across `getOwnerTokenState()`, `getOwnerTokenMetadata()`, `getRecoveryStatuses()`, and `ownerService.js` queries (`deletedAt` check).
+  - Added `refresh_exhausted` status reason and Thai label (`"Refresh ล้มเหลวถึงจำนวนสูงสุด"`) in `getRecoveryStatuses()` when `refreshFailCount >= failMax`.
+  - Enhanced encryption migration tests in `verification-tests/encryptionMigration.test.js` to assert round-trip plaintext decryption for tokens and IPs.
+  - Production dependency audit: 0 vulnerabilities. Dev-only @sonar/scan -> node-forge advisory remains as documented exception.
   - Refactored `discord/verification/routes/oauth.js` to execute `commitVerificationActivation` with payload validation and compensating snapshot rollback.
-  - Refactored `discord/features/joinCampaign.js` to fully consume `listAccessTokenCandidates()` and `getAccessToken()` from `oauthTokenManager`, eliminating duplicate token queries, decryption, and manual refresh failure persistence.
   - Refactored `discord/verification/ownerService.js` to use `oauthTokenManager.getRecoveryStatuses()` for recovery and `oauthTokenManager.getOwnerTokenMetadata()` for member detail, completely eliminating direct selection of `oauth/adminOAuth` subdocuments, while preserving full raw token visibility for Owner Detail via `oauthTokenManager.getOwnerTokenState()` in strict compliance with Owner Intent Policy (OI-03).
   - Refactored `discord/verification/services/encryptionMigration.js` to delegate `oauth_tokens` migration entirely to `oauthTokenManager.migrateStoredTokenEncryption()`, resolving plaintext re-encryption and adding CAS update filters.
   - Integrated `oauthTokenManager` into `discord/verification/lifecycle.js` with awaited startup, background timers, and safety-net maintenance sweeps.
   - Retired and deleted `discord/verification/utils/oauthTokenLifecycle.js`.
-  - Added dedicated security audit gate script `scripts/checkAudit.js` enforcing 0 vulnerabilities on production dependencies (`npm audit --omit=dev --audit-level=high`) and strictly scoped dev-only scanner exception for `@sonar/scan -> node-forge` (`GHSA-86w9-cpqp-85rv`).
-  - Updated coverage thresholds in `scripts/checkCoverageThresholds.js` tracking `oauthTokenManager.js` (>85% line coverage achieved).
-  - Maintained strict isolation for Voice and Quest subsystems (`discord/core/tokenCoordinator.js` untouched).
+  - Updated `ARCHITECTURE.md` implementation verification date to 2026-10-04, documented Single Authority with zero legacy token crypto in Join Campaign, and added Discord Developer Policy guidance for `guilds.join`.
 
 
 - **UI/UX Renovation — Cleanup & Polish Pass (all 9 guild commands):**

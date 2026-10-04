@@ -98,12 +98,14 @@ function validateTokenData(tokenData) {
         error.code = "oauth_token_invalid_payload";
         throw error;
     }
-    if (!tokenData.access_token || typeof tokenData.access_token !== "string") {
+    const accessToken = String(tokenData.access_token || "").trim();
+    if (!accessToken || typeof tokenData.access_token !== "string") {
         const error = new Error("Invalid token payload: missing or invalid access_token");
         error.code = "oauth_token_missing_access_token";
         throw error;
     }
-    if (!tokenData.refresh_token || typeof tokenData.refresh_token !== "string") {
+    const refreshToken = String(tokenData.refresh_token || "").trim();
+    if (!refreshToken || typeof tokenData.refresh_token !== "string") {
         const error = new Error("Invalid token payload: missing or invalid refresh_token");
         error.code = "oauth_token_missing_refresh_token";
         throw error;
@@ -322,7 +324,8 @@ async function performTokenRefreshUnderLock({
     now = Date.now(),
     failMax = DEFAULT_REFRESH_FAIL_MAX,
     redirectUri,
-    force = false
+    force = false,
+    marginMs = DEFAULT_ON_DEMAND_MARGIN_MS
 }) {
     const lockUserId = doc.discord?.userId || String(doc._id);
     const fresh = await readFreshOAuthDocument(model, doc, tokenField);
@@ -347,7 +350,7 @@ async function performTokenRefreshUnderLock({
 
     if (!force) {
         const expiresAt = Number(tokenState.expiresAt || 0);
-        const margin = DEFAULT_ON_DEMAND_MARGIN_MS;
+        const margin = Number.isFinite(Number(marginMs)) ? Number(marginMs) : DEFAULT_ON_DEMAND_MARGIN_MS;
         if (expiresAt > now + margin && tokenState.encryptedAccessToken) {
             const rawAccess = decryptToken(tokenState.encryptedAccessToken);
             if (rawAccess) {
@@ -485,7 +488,8 @@ async function getAccessToken({
             model,
             discord,
             tokenField,
-            now: Date.now(),
+            now,
+            marginMs,
             failMax: getOAuthRefreshConfig(env).failMax,
             redirectUri,
             force: forceRefresh
@@ -748,6 +752,17 @@ async function listAccessTokenCandidates({
         }
     }
 
+    const lastScanned = docs.length > 0 ? docs[docs.length - 1] : null;
+    const nextCursor = lastScanned ? (lastScanned._id || lastScanned.id) : null;
+    const hasMore = docs.length >= limit && nextCursor !== null;
+
+    Object.assign(candidates, {
+        candidates,
+        nextCursor,
+        hasMore,
+        scanned: docs.length
+    });
+
     return candidates;
 }
 
@@ -768,14 +783,22 @@ function revealTokenStateForOwner(token = {}) {
     };
 }
 
-async function getOwnerTokenState(userId, { model = OAuthUser, tokenFields = TOKEN_FIELDS } = {}) {
+async function getOwnerTokenState(userId, { model = OAuthUser, tokenFields = TOKEN_FIELDS, includeDeleted = false } = {}) {
     if (!userId) {
         const error = new Error("User ID is required for owner token reveal");
         error.code = "oauth_user_id_required";
         throw error;
     }
 
-    const doc = await model.findOne({ "discord.userId": String(userId) })
+    const filter = { "discord.userId": String(userId) };
+    if (!includeDeleted) {
+        filter.$or = [
+            { deletedAt: { $exists: false } },
+            { deletedAt: null }
+        ];
+    }
+
+    const doc = await model.findOne(filter)
         .select(`discord.userId ${tokenFields.join(" ")}`)
         .lean();
 
@@ -804,12 +827,20 @@ function tokenMetadataState(token = {}) {
     };
 }
 
-async function getOwnerTokenMetadata(userId, { model = OAuthUser, tokenFields = TOKEN_FIELDS } = {}) {
+async function getOwnerTokenMetadata(userId, { model = OAuthUser, tokenFields = TOKEN_FIELDS, includeDeleted = false } = {}) {
     if (!userId) {
         return { oauth: null, adminOAuth: null };
     }
 
-    const doc = await model.findOne({ "discord.userId": String(userId) })
+    const filter = { "discord.userId": String(userId) };
+    if (!includeDeleted) {
+        filter.$or = [
+            { deletedAt: { $exists: false } },
+            { deletedAt: null }
+        ];
+    }
+
+    const doc = await model.findOne(filter)
         .select(`discord.userId ${tokenFields.join(" ")}`)
         .lean();
 
@@ -820,7 +851,7 @@ async function getOwnerTokenMetadata(userId, { model = OAuthUser, tokenFields = 
     return result;
 }
 
-function checkTokenCryptoReasons(token, now) {
+function checkTokenCryptoReasons(token, now, failMax = DEFAULT_REFRESH_FAIL_MAX) {
     const reasons = [];
     const accessToken = token.encryptedAccessToken ? decryptToken(token.encryptedAccessToken) : null;
     const refreshToken = token.encryptedRefreshToken ? decryptToken(token.encryptedRefreshToken) : null;
@@ -832,6 +863,10 @@ function checkTokenCryptoReasons(token, now) {
     else if (!refreshToken) reasons.push("refresh_token_decrypt_failed");
 
     if (token.revokedAt) reasons.push("token_revoked");
+
+    if (Number(token.refreshFailCount || 0) >= failMax) {
+        reasons.push("refresh_exhausted");
+    }
 
     const isExpired = Number(token.expiresAt || 0) > 0 && Number(token.expiresAt) <= now;
     if (isExpired && !refreshToken) {
@@ -856,6 +891,7 @@ function recoveryReasonLabel(reason) {
         missing_refresh_token: "ไม่มี Refresh Token",
         refresh_token_decrypt_failed: "ถอดรหัส Refresh Token ไม่สำเร็จ",
         token_revoked: "Token ถูกยกเลิก",
+        refresh_exhausted: "Refresh ล้มเหลวถึงจำนวนสูงสุด",
         access_token_expired_without_refresh: "Access Token หมดอายุและต่ออายุไม่ได้"
     };
     if (String(reason).startsWith("missing_scope:")) return `ขาด Scope ${String(reason).slice(14)}`;
@@ -866,14 +902,23 @@ async function getRecoveryStatuses(userIds, {
     model = OAuthUser,
     requiredScopes = REQUIRED_USER_SCOPES,
     tokenField = "oauth",
-    now = Date.now()
+    now = Date.now(),
+    failMax = DEFAULT_REFRESH_FAIL_MAX,
+    includeDeleted = false
 } = {}) {
     if (!Array.isArray(userIds) || userIds.length === 0) {
         return new Map();
     }
 
     const safeIds = userIds.map(id => String(id || "")).filter(Boolean);
-    const docs = await model.find({ "discord.userId": { $in: safeIds } })
+    const filter = { "discord.userId": { $in: safeIds } };
+    if (!includeDeleted) {
+        filter.$or = [
+            { deletedAt: { $exists: false } },
+            { deletedAt: null }
+        ];
+    }
+    const docs = await model.find(filter)
         .select(`discord.userId ${tokenField}`)
         .lean();
 
@@ -884,7 +929,7 @@ async function getRecoveryStatuses(userIds, {
         const doc = docMap.get(userId);
         const tokenState = doc?.[tokenField] || {};
         const reasons = [
-            ...checkTokenCryptoReasons(tokenState, now),
+            ...checkTokenCryptoReasons(tokenState, now, failMax),
             ...collectMissingScopeReasons(tokenState.scope, requiredScopes)
         ];
         const uniqueReasons = [...new Set(reasons)];
@@ -897,9 +942,9 @@ async function getRecoveryStatuses(userIds, {
     return resultMap;
 }
 
-function tokenRecoveryReasons(token = {}, now = Date.now(), requiredScopes = REQUIRED_USER_SCOPES) {
+function tokenRecoveryReasons(token = {}, now = Date.now(), requiredScopes = REQUIRED_USER_SCOPES, failMax = DEFAULT_REFRESH_FAIL_MAX) {
     const reasons = [
-        ...checkTokenCryptoReasons(token, now),
+        ...checkTokenCryptoReasons(token, now, failMax),
         ...collectMissingScopeReasons(token?.scope, requiredScopes)
     ];
     return [...new Set(reasons)];
@@ -1044,53 +1089,77 @@ async function revokeToken({
         throw error;
     }
 
-    const doc = await model.findOne({ "discord.userId": String(userId) })
-        .select({ discord: 1, [tokenField]: 1 });
+    const lockKey = `${userId}:${tokenField}`;
+    return withTokenRefreshLock(lockKey, async () => {
+        const doc = await model.findOne({ "discord.userId": String(userId) })
+            .select({ discord: 1, [tokenField]: 1 });
 
-    if (!doc) {
-        return { ok: false, code: "user_not_found", reason: "User not found" };
-    }
-
-    const tokenState = doc[tokenField] || {};
-    const fieldKey = tokenType === "access_token" ? "encryptedAccessToken" : "encryptedRefreshToken";
-    const encryptedVal = tokenState[fieldKey];
-
-    if (encryptedVal) {
-        const raw = decryptToken(encryptedVal);
-        if (raw && typeof discord.revokeToken === "function") {
-            try {
-                await discord.revokeToken(raw, tokenType);
-            } catch (err) {
-                diagnosticStats.lastError = safeError(err);
-            }
+        if (!doc) {
+            return { ok: false, code: "user_not_found", reason: "User not found" };
         }
-    }
 
-    const previousVersion = Number(tokenState.version || 0);
-    const result = await model.updateOne(
-        {
-            _id: doc._id,
-            ...versionCondition(tokenField, previousVersion)
-        },
-        {
-            $set: {
-                [tokenPath(tokenField, "revokedAt")]: now,
-                updatedAt: now
+        const tokenState = doc[tokenField] || {};
+        const fieldKey = tokenType === "access_token" ? "encryptedAccessToken" : "encryptedRefreshToken";
+        const encryptedVal = tokenState[fieldKey];
+
+        // 1. Mark revoked in database first to atomically block in-flight or upcoming refresh attempts
+        const previousVersion = Number(tokenState.version || 0);
+        let result = await model.updateOne(
+            {
+                _id: doc._id,
+                ...versionCondition(tokenField, previousVersion)
             },
-            $inc: {
-                [tokenPath(tokenField, "version")]: 1
+            {
+                $set: {
+                    [tokenPath(tokenField, "revokedAt")]: now,
+                    updatedAt: now
+                },
+                $inc: {
+                    [tokenPath(tokenField, "version")]: 1
+                }
+            }
+        );
+
+        let modified = Number(result?.modifiedCount ?? result?.nModified ?? 0);
+        if (modified !== 1) {
+            // Concurrent write changed version before revoke CAS:
+            // Revocation MUST take precedence over token renewal. Force terminal revoked status on record.
+            result = await model.updateOne(
+                { _id: doc._id },
+                {
+                    $set: {
+                        [tokenPath(tokenField, "revokedAt")]: now,
+                        updatedAt: now
+                    },
+                    $inc: {
+                        [tokenPath(tokenField, "version")]: 1
+                    }
+                }
+            );
+            modified = Number(result?.modifiedCount ?? result?.nModified ?? 0);
+        }
+
+        // 2. Call Discord revocation endpoint if raw token is available
+        if (encryptedVal) {
+            const raw = decryptToken(encryptedVal);
+            if (raw && typeof discord.revokeToken === "function") {
+                try {
+                    await discord.revokeToken(raw, tokenType);
+                } catch (err) {
+                    diagnosticStats.lastError = safeError(err);
+                }
             }
         }
-    );
 
-    diagnosticStats.revokedCount++;
-    return {
-        ok: true,
-        revoked: true,
-        userId,
-        tokenField,
-        updated: Number(result?.modifiedCount ?? result?.nModified ?? 0) === 1
-    };
+        diagnosticStats.revokedCount++;
+        return {
+            ok: true,
+            revoked: true,
+            userId,
+            tokenField,
+            updated: modified === 1
+        };
+    });
 }
 
 function getDiagnostics() {
@@ -1229,6 +1298,7 @@ module.exports = {
     getDiagnostics,
 
     _test: {
+        validateTokenData,
         tokenPath,
         versionCondition,
         conflictOutcome,

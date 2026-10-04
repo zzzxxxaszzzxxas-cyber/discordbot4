@@ -1,6 +1,6 @@
 # Architecture
 
-Last implementation verification: 2026-09-22.
+Last implementation verification: 2026-10-04.
 
 ## 1. System shape
 
@@ -357,9 +357,22 @@ Deployments must keep both HMAC inputs stable unless a coordinated correlation
 migration or re-verification plan is executed; rotating `API_SECRET` also
 invalidates Owner sessions.
 
-Join Campaign scans OAuth users in stable `_id` cursor batches until the query
-is exhausted or the Owner stops the job. Its batch-size setting bounds memory;
-it is not a ceiling on the number of users processed.
+Join Campaign operates strictly through `oauthTokenManager.listAccessTokenCandidates()`
+and `oauthTokenManager.getAccessToken()`. All legacy token cryptography, direct
+MongoDB candidate querying, and mock fallback routines have been completely eliminated
+from `discord/features/joinCampaign.js`.
+
+- **Cursor Pagination Contract:** `listAccessTokenCandidates()` streams batches based
+  on the last MongoDB document scanned (`nextCursor`), returning an augmented candidate
+  list with `{ candidates, nextCursor, hasMore, scanned }`. Join Campaign iterates
+  while `hasMore && nextCursor`, advancing cursors continuously across scanned documents
+  even if an entire scanned batch yields zero usable candidates. Its batch-size setting
+  bounds memory; it is not a ceiling on the number of users processed.
+- **Discord Developer Policy Guidance (`guilds.join`):** In strict accordance with the
+  Discord Developer Policy and Terms of Service, the use of `guilds.join` must respect
+  explicit user consent and authorization. Adding users to guilds via OAuth tokens must
+  be transparent, bounded, rate-limited, and executed exclusively for legitimate community
+  workflows where users explicitly authorized server membership during OAuth verification.
 
 Automatic migration runs after the shared MongoDB connection is ready and on
 hourly verification maintenance. The same lifecycle also backfills canonical
@@ -426,14 +439,14 @@ The system does not claim to discover a residential IP behind VPN/TOR.
 `discord/core/oauthTokenManager.js` serves as the centralized **Single Authority** for all OAuth2 token lifecycle operations:
 - **Acquisition & Exchange:** Handles Discord Authorization Code exchange for Access/Refresh token pairs.
 - **Atomic Activation:** Executes `commitVerificationActivation()` for atomic `OAuthUser` record updates with payload validation and compensating snapshot rollback.
-- **Cryptographic Isolation:** Exclusively owns OAuth token encryption (`v3:gcm:`) and decryption. Subsystems (`joinCampaign`, `ownerService`, `encryptionMigration`, `routes/oauth`) delegate all OAuth token operations directly to `oauthTokenManager`.
-- **On-Demand Retrieval & Automatic Refresh:** Provides `getAccessToken()` with transparent near-expiry refresh and per-user/field refresh deduplication locks (`withTokenRefreshLock`). Excludes soft-deleted users.
-- **Candidate Selection:** Provides `listAccessTokenCandidates()` streaming usable candidates (`guilds.join`, preferred `oauth` over `adminOAuth`, unrevoked, unexhausted, non-deleted).
+- **Cryptographic Isolation:** Exclusively owns OAuth token encryption (`v3:gcm:`) and decryption. Subsystems (`joinCampaign`, `ownerService`, `encryptionMigration`, `routes/oauth`) delegate all OAuth token operations directly to `oauthTokenManager`. Zero independent crypto implementations exist outside the Manager.
+- **On-Demand Retrieval & Margin Propagation:** Provides `getAccessToken()` with transparent near-expiry refresh and per-user/field refresh deduplication locks (`withTokenRefreshLock`). Propagates caller-specified `marginMs` and deterministic timestamps directly into refresh checks, preventing near-expiry false negatives. Excludes soft-deleted users.
+- **Candidate Selection & Keyset Metadata:** Provides `listAccessTokenCandidates()` streaming usable candidates (`guilds.join`, preferred `oauth` over `adminOAuth`, unrevoked, unexhausted, non-deleted) and returns pagination cursors based on MongoDB documents scanned.
 - **Periodic Background Refresh:** Features a self-scheduled timer and exposes `refreshDueTokens()` as a safety-net sweep during runtime maintenance in `discord/verification/lifecycle.js`.
-- **Health & Recovery Evaluation:** Evaluates token integrity, expired states, decrypt failures, and missing scopes via `getRecoveryStatuses()` and `tokenRecoveryReasons()`.
+- **Health & Recovery Evaluation:** Evaluates token integrity, expired states, decrypt failures, exhausted refresh attempts (`refresh_exhausted`), and missing scopes via `getRecoveryStatuses()` and `tokenRecoveryReasons()`.
 - **Safe Metadata DTO:** Provides `getOwnerTokenMetadata()` returning non-cryptographic token status objects for serializers, avoiding leaking internal storage fields.
 - **Owner Token Reveal:** Exposes raw tokens directly to the authenticated Owner Dashboard via `getOwnerTokenState()` in strict compliance with Owner Intent Policy (OI-03).
-- **Atomic Token Revocation:** Provides `revokeToken()` to atomically set `revokedAt`, increment token version, and revoke authorizations via Discord API, preventing concurrent in-flight refresh overwrites.
+- **Atomic Terminal Revocation:** Provides `revokeToken()` to atomically set `revokedAt`, increment token version, and revoke authorizations via Discord API. Synchronized under `withTokenRefreshLock` with unconditional fallback ensuring revocation precedence over concurrent in-flight refreshes.
 - **Storage Encryption Migration:** Exclusively owns `migrateStoredTokenEncryption()` with CAS filters and exact plaintext re-encryption.
 
 > **Strict Scope Boundary:** `oauthTokenManager.js` manages Discord OAuth2 user authorization tokens exclusively. Voice sessions, Quest runner tokens, and bot gateway tokens remain strictly coordinated by `discord/core/tokenCoordinator.js` and are completely isolated from OAuth tokens.

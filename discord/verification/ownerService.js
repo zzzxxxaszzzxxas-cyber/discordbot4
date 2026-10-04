@@ -320,7 +320,13 @@ async function getOAuthRecoveryCenter(guildId) {
     const userIds = recipients.map(item => String(item._id || "")).filter(Boolean);
     const [recoveryMap, oauthUsers] = await Promise.all([
         oauthTokenManager.getRecoveryStatuses(userIds),
-        userIds.length ? OAuthUser.find({ "discord.userId": { $in: userIds } })
+        userIds.length ? OAuthUser.find({
+            "discord.userId": { $in: userIds },
+            $or: [
+                { deletedAt: { $exists: false } },
+                { deletedAt: null }
+            ]
+        })
             .select("discord.userId discord.username discord.globalName discord.displayTag discord.avatarUrl")
             .lean() : []
     ]);
