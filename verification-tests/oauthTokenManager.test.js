@@ -812,6 +812,21 @@ test("oauthTokenManager: validateTokenData rejects whitespace-only access_token 
     refresh_token: "   \t\n  ",
     expires_in: 3600
   })).toThrow(/missing or invalid refresh_token/);
+
+  expect(() => manager._test.validateTokenData({
+    access_token: "valid-access",
+    refresh_token: "valid-refresh",
+    expires_in: 3600,
+    token_type: 12345
+  })).toThrow(/token_type must be a string/);
+
+  const prepared = manager.prepareStoredToken({
+    access_token: "valid-access",
+    refresh_token: "valid-refresh",
+    expires_in: 3600,
+    token_type: "   "
+  }, { now: 1000 });
+  expect(prepared.tokenType).toBe("Bearer");
 });
 
 test("oauthTokenManager: getAccessToken propagates marginMs and deterministic now to refresh check", async () => {

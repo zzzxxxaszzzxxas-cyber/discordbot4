@@ -121,6 +121,11 @@ function validateTokenData(tokenData) {
         error.code = "oauth_token_invalid_scope";
         throw error;
     }
+    if (tokenData.token_type !== undefined && tokenData.token_type !== null && typeof tokenData.token_type !== "string") {
+        const error = new Error("Invalid token payload: token_type must be a string");
+        error.code = "oauth_token_invalid_token_type";
+        throw error;
+    }
     return true;
 }
 
@@ -128,13 +133,14 @@ function prepareStoredToken(tokenData = {}, { now = Date.now(), previousVersion 
     const rawAccess = String(tokenData?.access_token || "").trim();
     const rawRefresh = String(tokenData?.refresh_token || "").trim();
     const expiresIn = Number(tokenData?.expires_in || 0);
+    const rawTokenType = String(tokenData?.token_type || "").trim();
 
     return {
         encryptedAccessToken: rawAccess ? encryptToken(rawAccess) : "",
         encryptedRefreshToken: rawRefresh ? encryptToken(rawRefresh) : "",
         expiresAt: expiresIn > 0 ? now + (expiresIn * 1000) : null,
         scope: String(tokenData?.scope || ""),
-        tokenType: String(tokenData?.token_type || "Bearer"),
+        tokenType: rawTokenType || "Bearer",
         lastRefreshAt: isRefresh ? now : null,
         refreshFailCount: 0,
         lastRefreshError: null,
@@ -163,9 +169,10 @@ async function commitVerificationActivation({
     safeAttemptStartedAt,
     existing,
     storedSnapshots,
+    tokenField = "oauth",
     model = OAuthUser,
     now = Date.now()
-}) {
+} = {}) {
     if (!profileUserId) {
         const error = new Error("User ID is required for activation");
         error.code = "oauth_user_id_required";
@@ -174,26 +181,26 @@ async function commitVerificationActivation({
 
     validateTokenData(tokenData);
 
-    const lockKey = `${profileUserId}:oauth`;
+    const lockKey = `${profileUserId}:${tokenField}`;
     return withTokenRefreshLock(lockKey, async () => {
         let currentDoc = existing;
         if (currentDoc === undefined && typeof model?.findOne === "function") {
             try {
                 const query = model.findOne({ "discord.userId": profileUserId });
                 currentDoc = typeof query?.select === "function"
-                    ? await query.select("oauth.version").lean()
+                    ? await query.select(`${tokenField}.version`).lean()
                     : await query;
             } catch {
                 currentDoc = null;
             }
         }
 
-        const previousVersion = Number(currentDoc?.oauth?.version ?? 0);
-        const oauthPayload = prepareStoredToken(tokenData, { now, previousVersion, isRefresh: false });
+        const previousVersion = Number(currentDoc?.[tokenField]?.version ?? 0);
+        const tokenPayload = prepareStoredToken(tokenData, { now, previousVersion, isRefresh: false });
 
         const finalUpdateSet = {
             ...updateSet,
-            oauth: oauthPayload
+            [tokenField]: tokenPayload
         };
 
         const activationFilter = {
