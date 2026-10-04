@@ -97,3 +97,48 @@ test("systemAlertForwarding: payload builder preserves RESOLVED state and green 
     assert.match(embed.author.name, /PHOMUEANGTAI • ACTION REQUIRED/);
     assert.ok(embed.fields.some(f => f.name === "สถานะ" && f.value === "แก้ไขแล้ว"));
 });
+
+test("systemAlertForwarding: initLogCapture forwards console.error and console.warn to ALERT_WEBHOOK_URL", () => {
+    const system = require("../index/system");
+    const dispatched = [];
+    const origSendAlert = webhooks.sendAlertWebhook;
+    webhooks.sendAlertWebhook = async (payload) => {
+        dispatched.push(payload);
+        return true;
+    };
+
+    const origConsoleError = console.error;
+    const origConsoleWarn = console.warn;
+    const origConsoleLog = console.log;
+
+    try {
+        system.initLogCapture(100);
+
+        console.error("[DATABASE] ❌ Failed to load approved guilds: Connection timeout");
+        console.warn("[WORKER] ⚠️ VoiceConnection socket error for vc_12345: ETIMEDOUT");
+
+        assert.equal(dispatched.length, 2);
+
+        // Error payload verification
+        const errPayload = dispatched[0];
+        assert.ok(errPayload.embeds && errPayload.embeds.length === 1);
+        const errEmbed = errPayload.embeds[0];
+        assert.equal(errEmbed.color, 0xED4245); // Red
+        assert.match(errEmbed.title, /DATABASE.*ERROR DETECTED/);
+        assert.ok(errEmbed.description.includes("Failed to load approved guilds"));
+
+        // Warning payload verification
+        const warnPayload = dispatched[1];
+        assert.ok(warnPayload.embeds && warnPayload.embeds.length === 1);
+        const warnEmbed = warnPayload.embeds[0];
+        assert.equal(warnEmbed.color, 0xFEE75C); // Yellow
+        assert.match(warnEmbed.title, /VOICE.*WARNING DETECTED/);
+        assert.ok(warnEmbed.description.includes("VoiceConnection socket error"));
+    } finally {
+        console.error = origConsoleError;
+        console.warn = origConsoleWarn;
+        console.log = origConsoleLog;
+        webhooks.sendAlertWebhook = origSendAlert;
+    }
+});
+

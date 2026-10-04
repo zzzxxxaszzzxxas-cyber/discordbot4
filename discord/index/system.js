@@ -5,10 +5,11 @@
  * - Scheduled cron maintenance tasks and map pruning.
  */
 
+const webhooks = require("../core/webhooks");
 const {
     sendAlertWebhook,
     buildWebhookEventPayload
-} = require("../core/webhooks");
+} = webhooks;
 const { sanitizeLogText, safeError } = require("../core/safeLogger");
 const { normalizeRuntimeLine } = require("../core/startupLogger");
 const { readFiniteInteger } = require("../core/numbers");
@@ -58,6 +59,95 @@ function initLogCapture(maxLogs = MAX_LOGS_DEFAULT) {
         if (webLogs.length > maxLogs) webLogs.shift();
     }
 
+    const alertDedupe = new Map();
+    const DEDUPE_WINDOW_MS = 2 * 60 * 1000;
+    const MAX_DEDUPE_ENTRIES = 500;
+    let isForwardingAlert = false;
+
+    function forwardConsoleAlert(level, line) {
+        if (isForwardingAlert) return;
+        if (typeof line !== "string" || !line.trim()) return;
+
+        // Skip internal webhook transport and delivery warnings to avoid feedback loops
+        if (line.includes("[WEBHOOK]") || line.includes("ALERT delivery unavailable")) return;
+
+        // Skip protected shadow operational logs to preserve policy
+        if (line.includes("[SHADOW")) return;
+
+        // Skip events that already have dedicated rich webhooks dispatched
+        if (line.includes("MongoDB Connection Lost") ||
+            line.includes("MongoDB Error:") ||
+            line.includes("MongoDB save failed:") ||
+            (line.includes("[GATEWAY]") && (line.includes("event=error") || line.includes("event=shardError") || line.includes("event=shardDisconnect") || line.includes("event=shardResume"))) ||
+            line.includes("[SLASH] ❌ Error in") ||
+            line.includes("[CRITICAL] uncaughtException") ||
+            line.includes("[CRITICAL] unhandledRejection")) {
+            return;
+        }
+
+        // Determine subsystem category from tags in log text (skipping generic BOT/LEVEL tags)
+        const tagMatches = [...line.matchAll(/\[([^\]]+)\]/g)]
+            .map(m => m[1].trim().toUpperCase())
+            .filter(t => !["BOT", "OK", "INFO", "WARN", "FAIL", "ERROR", "CRITICAL"].includes(t.replace(/[^A-Z]/g, "")));
+        const rawTag = tagMatches[0] || "RUNTIME";
+
+        let category = "RUNTIME";
+        if (rawTag.includes("DATA") || rawTag.includes("MONGO") || rawTag.includes("SQLITE")) category = "DATABASE";
+        else if (rawTag.includes("VOICE") || rawTag.includes("WORKER") || rawTag.includes("SESSION") || rawTag.includes("AUTODEAF") || rawTag.includes("NATURAL") || rawTag.includes("HEARTBEAT")) category = "VOICE";
+        else if (rawTag.includes("VERIFY") || rawTag.includes("OAUTH") || rawTag.includes("SNAPSHOT")) category = "VERIFICATION";
+        else if (rawTag.includes("GATEWAY") || rawTag.includes("SHARD")) category = "GATEWAY";
+        else if (rawTag.includes("COMMAND") || rawTag.includes("SLASH") || rawTag.includes("ROLE")) category = "COMMAND";
+        else if (rawTag.includes("SECURITY") || rawTag.includes("PROTECTION") || rawTag.includes("RAID") || rawTag.includes("SPAM")) category = "SECURITY";
+        else if (rawTag.includes("QUEST")) category = "QUEST";
+        else if (rawTag.includes("MODCASE")) category = "MODERATION";
+        else if (rawTag.includes("CRITICAL") || rawTag.includes("FATAL")) category = "SYSTEM";
+
+        // Clean message text for dedupe key and embed
+        const cleanMsg = line.replace(/^\[(?:BOT|GATEWAY|DATABASE|WORKER|SESSION|SLASH|SECURITY|VERIFY|QUEST|PROTECTION|RUNTIME|AUTODEAF|NATURAL|HEARTBEAT|MODCASE|ROLE_BTN)[^\]]*\]\s*/i, "").trim();
+
+        // Fingerprint for deduplication
+        const fingerprint = `${level}:${category}:${cleanMsg.slice(0, 120)}`;
+        const now = Date.now();
+        const lastSent = alertDedupe.get(fingerprint);
+        if (lastSent && (now - lastSent) < DEDUPE_WINDOW_MS) {
+            return;
+        }
+
+        if (alertDedupe.size >= MAX_DEDUPE_ENTRIES) {
+            const oldestKey = alertDedupe.keys().next().value;
+            alertDedupe.delete(oldestKey);
+        }
+        alertDedupe.set(fingerprint, now);
+
+        isForwardingAlert = true;
+        try {
+            const isError = level === "error";
+            const severity = isError ? "ERROR" : "WARNING";
+            const title = isError ? `${category} ERROR DETECTED` : `${category} WARNING DETECTED`;
+            const code = `${category.toLowerCase()}.${isError ? "log_error" : "log_warning"}`;
+
+            webhooks.sendAlertWebhook(webhooks.buildWebhookEventPayload({
+                target: "ALERT",
+                severity,
+                category,
+                code,
+                state: "OPEN",
+                title,
+                description: line.slice(0, 1000),
+                impact: isError ? "พบข้อผิดพลาดในระบบ Runtime หรือฐานข้อมูล ซึ่งอาจกระทบต่อบริการ" : "ระบบตรวจพบการแจ้งเตือนที่ควรเฝ้าระวังความเสถียร",
+                action: "ตรวจสอบข้อความแจ้งเตือนและบริบทการทำงานในระบบ",
+                context: {
+                    "ประเภท": isError ? "ข้อผิดพลาด (Error)" : "คำเตือน (Warning)",
+                    "หมวดหมู่": category
+                }
+            })).catch(() => {});
+        } catch {
+            // Logging must never crash the bot process
+        } finally {
+            isForwardingAlert = false;
+        }
+    }
+
     console.log = (...args) => {
         const msg = require('util').format(...args);
         const line = normalizeRuntimeLine('log', msg);
@@ -69,12 +159,14 @@ function initLogCapture(maxLogs = MAX_LOGS_DEFAULT) {
         const line = normalizeRuntimeLine('error', msg);
         pushLog('error', line);
         originalError(line);
+        forwardConsoleAlert('error', line);
     };
     console.warn = (...args) => {
         const msg = require('util').format(...args);
         const line = normalizeRuntimeLine('warn', msg);
         pushLog('warn', line);
         originalWarn(line);
+        forwardConsoleAlert('warn', line);
     };
 }
 
