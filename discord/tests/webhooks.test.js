@@ -966,4 +966,65 @@ test("sendDedupedWebhook recovers from failed pending delivery without infinite 
     await flushWebhookQueue(20);
 });
 
+test("WEBHOOK_LOG_URL visual renovation: vibrant category neon colors and emojis", () => {
+    const { _test } = require("../core/webhooks");
+
+    // 1. Verify category-specific neon colors for target: LOG with severity: INFO
+    const categoriesToTest = [
+        { category: "GUILD", expectedColor: 0x00F5D4, expectedEmoji: "🏰" },
+        { category: "MODERATION", expectedColor: 0xFF5722, expectedEmoji: "⚖️" },
+        { category: "OWNER", expectedColor: 0xFFD700, expectedEmoji: "👑" },
+        { category: "ADMIN", expectedColor: 0xFFA000, expectedEmoji: "⚙️" },
+        { category: "QUEST", expectedColor: 0x9D4EDD, expectedEmoji: "🚀" },
+        { category: "TOKEN", expectedColor: 0x00BBF9, expectedEmoji: "🔑" },
+        { category: "SECURITY", expectedColor: 0xF72585, expectedEmoji: "🛡️" },
+        { category: "VOICE", expectedColor: 0x38B6FF, expectedEmoji: "🔊" },
+        { category: "VERIFICATION", expectedColor: 0x48CAE4, expectedEmoji: "📋" },
+        { category: "COMMAND", expectedColor: 0x7209B7, expectedEmoji: "⚡" },
+        { category: "DATABASE", expectedColor: 0x06D6A0, expectedEmoji: "💾" },
+        { category: "GATEWAY", expectedColor: 0x4361EE, expectedEmoji: "🌐" },
+        { category: "SYSTEM", expectedColor: 0x00D2FF, expectedEmoji: "✨" }
+    ];
+
+    for (const item of categoriesToTest) {
+        const payload = buildWebhookEventPayload({
+            target: "LOG",
+            severity: "INFO",
+            category: item.category,
+            code: `${item.category.toLowerCase()}.event`,
+            title: "EVENT TRIGGERED"
+        });
+        const embed = payload.embeds[0];
+        assert.equal(embed.color, item.expectedColor, `Color mismatch for ${item.category}`);
+        assert.equal(embed.title, `${item.expectedEmoji} ${item.category} · EVENT TRIGGERED`, `Emoji mismatch for ${item.category}`);
+    }
+
+    // 2. Verify severity SUCCESS in LOG uses vibrant emerald green and green circle
+    const successPayload = buildWebhookEventPayload({
+        target: "LOG",
+        severity: "SUCCESS",
+        category: "SYSTEM",
+        code: "system.ok",
+        title: "ONLINE"
+    });
+    assert.equal(successPayload.embeds[0].color, 0x00E676);
+    assert.equal(successPayload.embeds[0].title, "🟢 SYSTEM · ONLINE");
+
+    // 3. Verify event.reason maps cleanly to canonical รายละเอียด field
+    const reasonPayload = buildWebhookEventPayload({
+        target: "LOG",
+        severity: "INFO",
+        category: "MODERATION",
+        code: "moderation.warn",
+        title: "MEMBER WARNED",
+        actor: "Moderator",
+        targetUser: "BadActor",
+        reason: "Repeated spam in chat"
+    });
+    const detailField = reasonPayload.embeds[0].fields.find(f => f.name === "รายละเอียด");
+    assert.ok(detailField, "รายละเอียด field must be present when reason is provided");
+    assert.equal(detailField.value, "Repeated spam in chat");
+});
+
+
 

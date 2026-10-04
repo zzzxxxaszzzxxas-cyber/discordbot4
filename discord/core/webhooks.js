@@ -54,6 +54,52 @@ const EVENT_CATEGORY_LABELS = Object.freeze({
     DATA: "DATA",
     CAMPAIGN: "CAMPAIGN"
 });
+const LOG_CATEGORY_COLORS = Object.freeze({
+    GUILD: 0x00F5D4,          // Electric Mint / Turquoise
+    MODERATION: 0xFF5722,     // Vibrant Coral Orange
+    OWNER: 0xFFD700,          // Radiant Gold
+    ADMIN: 0xFFA000,          // Vibrant Amber
+    QUEST: 0x9D4EDD,          // Cyber Violet / Neon Purple
+    TOKEN: 0x00BBF9,          // Vivid Cyan / Electric Diamond
+    SECURITY: 0xF72585,       // Hot Neon Pink
+    PROTECTION: 0xF72585,     // Hot Neon Pink
+    TRACE: 0xE0AAFF,          // Lavender Neon
+    VOICE: 0x38B6FF,          // Sky Electric Blue
+    VOICE_ADMIN: 0x0077B6,    // Ocean Deep Blue
+    VERIFICATION: 0x48CAE4,   // Crystal Ice Blue
+    COMMAND: 0x7209B7,        // Electric Indigo
+    DATABASE: 0x06D6A0,       // Neon Emerald Mint
+    GATEWAY: 0x4361EE,        // Vivid Cobalt
+    RUNTIME: 0x3A86FF,        // Vivid Azure
+    CHANNEL: 0x2EC4B6,        // Teal Sea
+    CAMPAIGN: 0xFF006E,       // Electric Rose
+    DATA: 0x2A9D8F,           // Ocean Pine
+    WEBHOOK: 0x8338EC,        // Neon Grape
+    SYSTEM: 0x00D2FF          // Vibrant Aqua Blue
+});
+const LOG_CATEGORY_EMOJIS = Object.freeze({
+    GUILD: "🏰",
+    MODERATION: "⚖️",
+    OWNER: "👑",
+    ADMIN: "⚙️",
+    QUEST: "🚀",
+    TOKEN: "🔑",
+    SECURITY: "🛡️",
+    PROTECTION: "🛡️",
+    TRACE: "🔍",
+    VOICE: "🔊",
+    VOICE_ADMIN: "🎙️",
+    VERIFICATION: "📋",
+    COMMAND: "⚡",
+    DATABASE: "💾",
+    GATEWAY: "🌐",
+    RUNTIME: "⚡",
+    CHANNEL: "💬",
+    WEBHOOK: "📡",
+    DATA: "📊",
+    CAMPAIGN: "🎯",
+    SYSTEM: "✨"
+});
 const DISCORD_WEBHOOK_HOSTS = new Set([
     "discord.com",
     "discordapp.com",
@@ -335,10 +381,17 @@ function appendEventField(fields, name, value, inline) {
     });
 }
 
-function buildWebhookEventTitle(event, presentation, category) {
-    let title = String(event.title || "").trim();
+function buildWebhookEventTitle(event, presentation, category, target = "LOG") {
+    const severity = normalizeEventToken(event?.severity, WEBHOOK_SEVERITIES.INFO);
+    let emoji = presentation?.emoji || "🔵";
+    if (target === "LOG" && severity === "INFO") {
+        const categoryToken = normalizeEventToken(event?.category, category);
+        emoji = LOG_CATEGORY_EMOJIS[categoryToken] || "✨";
+    }
+
+    let title = String(event?.title || "").trim();
     if (!title) {
-        return `${presentation.emoji} ${category}`;
+        return `${emoji} ${category}`;
     }
     title = title.replace(/^(?:SHADOW REPORT:\s*|COMMAND LOG:\s*|ACTION:\s*|REPORT:\s*)/i, "");
     title = title.replace(/^(?:[🔵🟢🟠🔴🚨]|[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}])+\s*/u, "");
@@ -354,8 +407,32 @@ function buildWebhookEventTitle(event, presentation, category) {
         title = title.replace(redundantCategoryRegex, "").trim();
     }
 
-    return `${presentation.emoji} ${category} · ${title}`;
+    return `${emoji} ${category} · ${title}`;
 }
+
+function resolveWebhookEventColor(event, severity, categoryToken, target) {
+    if (Number.isFinite(Number(event?.color))) {
+        return Number(event.color);
+    }
+    // High-severity events retain standard priority colors across all targets
+    if (severity === "CRITICAL") return Colors.DarkRed;
+    if (severity === "ERROR") return Colors.Red;
+    if (severity === "WARNING") return Colors.Yellow;
+
+    // For ALERT targets, preserve standard presentation colors
+    if (target === "ALERT") {
+        return (EVENT_PRESENTATION[severity] || EVENT_PRESENTATION.INFO).color;
+    }
+
+    // For LOG targets:
+    if (severity === "SUCCESS") {
+        return 0x00E676; // Vivid Emerald Green (clean, punchy neon)
+    }
+
+    // Default INFO severity in LOG: vibrant category-specific neon color
+    return LOG_CATEGORY_COLORS[categoryToken] || 0x00D2FF;
+}
+
 
 function normalizeFieldName(name) {
     return String(name ?? "").trim().toLowerCase();
@@ -512,7 +589,8 @@ function buildEventFields(event, state, target) {
             appendEventField(fields, "ผลลัพธ์", resultField.value, resultField.inline ?? true);
         }
 
-        const detailsField = extractCanonicalField("รายละเอียด", event.details);
+        const detailsVal = event.details || event.reason;
+        const detailsField = extractCanonicalField("รายละเอียด", detailsVal, ["เหตุผล", "reason"]);
         if (detailsField) {
             appendEventField(fields, "รายละเอียด", detailsField.value, detailsField.inline ?? false);
         }
@@ -569,11 +647,12 @@ function buildWebhookEventPayload(event = {}) {
 
     const sourceIconUrl = normalizeDiscordMediaUrl(event.sourceIconUrl);
     const thumbnailUrl = normalizeDiscordMediaUrl(event.thumbnailUrl);
+    const color = resolveWebhookEventColor(event, severity, categoryToken, target);
     return {
         embeds: [{
-            color: presentation.color,
+            color,
             author: buildEventAuthor(target, sourceIconUrl),
-            title: buildWebhookEventTitle(event, presentation, displayCategory),
+            title: buildWebhookEventTitle(event, presentation, displayCategory, target),
             description: event.description ? String(event.description) : undefined,
             fields,
             footer: { text: `${displayCategory} · ${code}` },
@@ -1223,6 +1302,9 @@ module.exports = {
         normalizeEventContextText,
         escapeDiscordMarkdown,
         buildEventFields,
-        buildWebhookEventTitle
+        buildWebhookEventTitle,
+        resolveWebhookEventColor,
+        LOG_CATEGORY_COLORS,
+        LOG_CATEGORY_EMOJIS
     }
 };
