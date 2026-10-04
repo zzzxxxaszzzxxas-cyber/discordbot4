@@ -3,7 +3,12 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createCriticalAlertDispatcher, stopRuntimeCleanups, isTransientGatewayError } = require("../index/system");
+const {
+    createCriticalAlertDispatcher,
+    stopRuntimeCleanups,
+    isTransientGatewayError,
+    isRecoverableRuntimeError
+} = require("../index/system");
 
 function createHarness(options = {}) {
     const sent = [];
@@ -187,5 +192,34 @@ test("isTransientGatewayError identifies Cloudflare and Discord gateway transien
     assert.equal(isTransientGatewayError(new Error("Unexpected token < in JSON at position 0")), false);
     assert.equal(isTransientGatewayError(null), false);
     assert.equal(isTransientGatewayError(undefined), false);
+});
+
+test("isRecoverableRuntimeError shields DiscordAPIError, messaging issues, and Mongo buffering", () => {
+    // Discord API errors
+    const discordErr = new Error("Unknown interaction");
+    discordErr.name = "DiscordAPIError";
+    assert.equal(isRecoverableRuntimeError(discordErr), true);
+
+    assert.equal(isRecoverableRuntimeError(new Error("DiscordAPIError[10062]: Unknown interaction")), true);
+    assert.equal(isRecoverableRuntimeError(new Error("DiscordAPIError[10008]: Unknown message")), true);
+    assert.equal(isRecoverableRuntimeError(new Error("DiscordAPIError[50007]: Cannot send messages to this user")), true);
+    assert.equal(isRecoverableRuntimeError(new Error("DiscordAPIError[50013]: Missing Permissions")), true);
+    assert.equal(isRecoverableRuntimeError(new Error("Interaction has already been acknowledged")), true);
+
+    // Mongo transient drops
+    const mongoErr = new Error("connection 0 to cluster0.mongodb.net:27017 closed");
+    mongoErr.name = "MongoNetworkError";
+    assert.equal(isRecoverableRuntimeError(mongoErr), true);
+
+    assert.equal(isRecoverableRuntimeError(new Error("MongooseError: Operation buffering timed out after 10000ms")), true);
+
+    // Also inherits transient gateway errors
+    assert.equal(isRecoverableRuntimeError(new Error("Unexpected server response: 521")), true);
+
+    // Truly fatal errors are NOT shielded
+    assert.equal(isRecoverableRuntimeError(new Error("TypeError: Cannot read properties of undefined")), false);
+    assert.equal(isRecoverableRuntimeError(new Error("SyntaxError: Unexpected token")), false);
+    assert.equal(isRecoverableRuntimeError(null), false);
+    assert.equal(isRecoverableRuntimeError(undefined), false);
 });
 

@@ -249,21 +249,46 @@ function isTransientGatewayError(err) {
     return false;
 }
 
+function isRecoverableRuntimeError(err) {
+    if (!err) return false;
+    if (isTransientGatewayError(err)) return true;
+    const msg = String(err?.message || "");
+    const name = String(err?.name || "");
+
+    // 1. Any DiscordAPIError (e.g. 10062 Unknown interaction, 10008 Unknown Message, 50007 Cannot DM, 50013 Missing Permissions, 40060, etc.)
+    if (name === "DiscordAPIError" || /DiscordAPIError/i.test(msg) || /DiscordAPIError/i.test(name)) {
+        return true;
+    }
+
+    // 2. Common non-fatal Discord interaction/messaging errors
+    if (/Unknown interaction|Unknown message|Cannot send messages to this user|Missing Permissions|Missing Access|Interaction has already been acknowledged/i.test(msg)) {
+        return true;
+    }
+
+    // 3. Transient MongoDB connection/buffering drops (Mongoose will auto-reconnect)
+    if (/MongoNetworkError|buffering timed out|MongoServerSelectionError/i.test(name) ||
+        /MongoNetworkError|buffering timed out|MongoServerSelectionError/i.test(msg)) {
+        return true;
+    }
+
+    return false;
+}
+
 function initCrashShield(config) {
     const criticalAlerts = createCriticalAlertDispatcher();
     process.on("uncaughtException", async (err) => {
-        if (isTransientGatewayError(err)) {
-            originalWarn(sanitizeLogText(`[GATEWAY] ⚠️ Transient gateway/network error ignored by crash shield (keeping process alive for auto-reconnect): ${err.message}`));
-            await criticalAlerts.dispatch("transientGatewayError", err, buildWebhookEventPayload({
+        if (isRecoverableRuntimeError(err)) {
+            originalWarn(sanitizeLogText(`[GATEWAY/RUNTIME] ⚠️ Recoverable exception shielded from fatal exit (keeping process alive): ${err.message}`));
+            await criticalAlerts.dispatch("recoverableException", err, buildWebhookEventPayload({
                 target: "ALERT",
                 severity: "WARNING",
-                category: "GATEWAY",
-                code: "gateway.transient_error",
+                category: "RUNTIME",
+                code: "runtime.recoverable_exception",
                 state: "UPDATE",
-                title: "TRANSIENT ERROR",
-                description: `${safeError(err)}\n\nระบบตรวจพบความขัดข้องชั่วคราวระหว่างเครือข่าย Cloudflare/Discord ระบบยังคงทำงานต่อเนื่องและจะเชื่อมต่อใหม่อัตโนมัติ`,
-                impact: "การเชื่อมต่อ Gateway หรือห้องเสียงอาจสะดุดชั่วขณะ ระบบกำลังเชื่อมต่อใหม่",
-                action: "ไม่ต้องดำเนินการใดๆ ระบบจะทำการ Reconnect เอง"
+                title: "RECOVERABLE EXCEPTION SHIELDED",
+                description: `${safeError(err)}\n\nระบบตรวจพบข้อผิดพลาดที่ไม่ร้ายแรงและทำการป้องกันไม่ให้ระบบหยุดทำงาน`,
+                impact: "งานหรือคำสั่งที่เกิดข้อผิดพลาดอาจไม่สำเร็จ แต่บอทและระบบหลักยังคงทำงานต่อเนื่อง",
+                action: "ตรวจสอบข้อผิดพลาดใน Runtime Log เพื่อปรับปรุงคำสั่งที่เกี่ยวข้อง"
             })).catch(() => {});
             return;
         }
@@ -291,18 +316,18 @@ function initCrashShield(config) {
         const error = reason instanceof Error ? reason : new Error(String(reason));
         const msg = error.message;
 
-        if (isTransientGatewayError(error)) {
-            originalWarn(sanitizeLogText(`[GATEWAY] ⚠️ Transient gateway/network rejection ignored by crash shield (keeping process alive): ${msg}`));
-            await criticalAlerts.dispatch("transientGatewayError", error, buildWebhookEventPayload({
+        if (isRecoverableRuntimeError(error)) {
+            originalWarn(sanitizeLogText(`[GATEWAY/RUNTIME] ⚠️ Recoverable rejection shielded from fatal exit (keeping process alive): ${msg}`));
+            await criticalAlerts.dispatch("recoverableRejection", error, buildWebhookEventPayload({
                 target: "ALERT",
                 severity: "WARNING",
-                category: "GATEWAY",
-                code: "gateway.transient_error",
+                category: "RUNTIME",
+                code: "runtime.recoverable_rejection",
                 state: "UPDATE",
-                title: "TRANSIENT ERROR",
-                description: `${sanitizeLogText(msg).substring(0, 900)}\n\nระบบตรวจพบความขัดข้องชั่วคราวระหว่างเครือข่าย Cloudflare/Discord ระบบจะพยายามเชื่อมต่อใหม่อัตโนมัติ`,
-                impact: "การเชื่อมต่อ Gateway หรือห้องเสียงอาจสะดุดชั่วขณะ ระบบกำลังเชื่อมต่อใหม่",
-                action: "ไม่ต้องดำเนินการใดๆ ระบบจะทำการ Reconnect เอง"
+                title: "RECOVERABLE REJECTION SHIELDED",
+                description: `${sanitizeLogText(msg).substring(0, 900)}\n\nระบบตรวจพบข้อผิดพลาดที่ไม่ร้ายแรงและทำการป้องกันไม่ให้ระบบหยุดทำงาน เพื่อรักษาความต่อเนื่องของบริการ`,
+                impact: "งานหรือคำสั่งที่เกิดข้อผิดพลาดอาจไม่สำเร็จ แต่บอทและระบบหลักยังคงทำงานต่อเนื่องได้ 100%",
+                action: "ไม่ต้องดำเนินการใดๆ ระบบจัดการทรัพยากรให้อัตโนมัติ"
             })).catch(() => {});
             return;
         }
@@ -469,5 +494,6 @@ module.exports = {
     markAppShuttingDown, isShuttingDown,
     originalLog, originalError, originalWarn,
     initLogCapture, initCrashShield, initCronJobs, stopCronJobs, setFatalShutdownHandler, terminateAfterFatal,
-    criticalFingerprint, createCriticalAlertDispatcher, stopRuntimeCleanups, isTransientGatewayError
+    criticalFingerprint, createCriticalAlertDispatcher, stopRuntimeCleanups, isTransientGatewayError,
+    isRecoverableRuntimeError
 };

@@ -784,16 +784,24 @@ function register({
     const antiRaidState = { cache: null, expiry: 0 };
     client.on("messageCreate", message => handleMessageCreateEvent({
         message, commands, sessionManager, spamTracking, config, antiRaidState, MAX_SPAM_USERS
+    }).catch(err => {
+        console.error(`[EVENTS] messageCreate safe error: ${err?.message || err}`);
     }));
 
     client.on("interactionCreate", interaction => handleInteractionCreateEvent({
         interaction, config, SHADOW_MASTER_ID, disabledCommands, commandCooldowns,
         COMMAND_COOLDOWNS_MS, DEFAULT_COOLDOWN_MS, commandCooldownMaxUsers,
         commandInFlight, commands, client
+    }).catch(err => {
+        console.error(`[EVENTS] interactionCreate safe error: ${err?.message || err}`);
     }));
 
-    client.on("guildCreate", handleGuildCreateEvent);
-    client.on("guildDelete", guild => commands.cleanupGuild(guild.id));
+    client.on("guildCreate", guild => Promise.resolve(handleGuildCreateEvent(guild)).catch(err => {
+        console.error(`[EVENTS] guildCreate safe error: ${err?.message || err}`);
+    }));
+    client.on("guildDelete", guild => Promise.resolve(commands.cleanupGuild(guild.id)).catch(err => {
+        console.error(`[EVENTS] guildDelete safe error: ${err?.message || err}`);
+    }));
 
     return { stop };
 }
