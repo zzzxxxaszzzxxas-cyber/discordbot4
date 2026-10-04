@@ -1086,7 +1086,7 @@ async function startUserQuestSession({
         // Emit startup webhook event
         sendWebhookEvent({
             severity: 'INFO',
-            category: 'COMMAND',
+            category: 'QUEST',
             code: 'quest.session.started',
             title: `${config.emojis?.boost || '🚀'} มีการเริ่มระบบทำ Quest อัตโนมัติ`,
             description: `ผู้ใช้ <@${invokerId}> ได้ส่งคำขอทำ Discord Quest (โหมด: ${mode})`,
