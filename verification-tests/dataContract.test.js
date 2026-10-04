@@ -375,6 +375,7 @@ describe("unified verification data contract", () => {
         };
         jest.spyOn(OAuthUser, "findOne")
             .mockReturnValueOnce(firstQuery)
+            .mockReturnValueOnce(firstQuery)
             .mockReturnValueOnce(secondQuery);
         const duplicate = Object.assign(new Error("duplicate key"), {
             code: 11000,

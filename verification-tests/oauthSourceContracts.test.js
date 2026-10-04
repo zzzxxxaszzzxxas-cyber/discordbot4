@@ -66,6 +66,8 @@ describe('OAuth Single Authority source and architectural contracts', () => {
         expect(joinCampaignSource).toContain('tokenManager.listAccessTokenCandidates(');
         expect(joinCampaignSource).toContain('tokenManager.getAccessToken(');
         expect(joinCampaignSource).not.toMatch(/decryptToken\(/);
+        expect(joinCampaignSource).not.toContain('markTokenRefreshFailure');
+        expect(joinCampaignSource).not.toMatch(/adminOAuth\s*\?\s*["']adminOAuth["']\s*:\s*["']oauth["']/);
     });
 
     test('ownerService delegates token recovery, metadata and raw reveal to oauthTokenManager', () => {

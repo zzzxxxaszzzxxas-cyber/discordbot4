@@ -193,8 +193,8 @@ async function commitVerificationActivation({
 
     const lockKey = `${profileUserId}:${tokenField}`;
     return withTokenRefreshLock(lockKey, async () => {
-        let currentDoc = existing;
-        if (currentDoc === undefined && typeof model?.findOne === "function") {
+        let currentDoc = null;
+        if (typeof model?.findOne === "function") {
             try {
                 const query = model.findOne({ "discord.userId": profileUserId });
                 currentDoc = typeof query?.select === "function"
@@ -206,9 +206,11 @@ async function commitVerificationActivation({
                 readError.cause = err;
                 throw readError;
             }
+        } else if (existing) {
+            currentDoc = existing;
         }
 
-        const previousVersion = Number(currentDoc?.[tokenField]?.version ?? 0);
+        const previousVersion = Number(currentDoc?.[tokenField]?.version ?? existing?.[tokenField]?.version ?? 0);
         const tokenPayload = prepareStoredToken(tokenData, { now, previousVersion, isRefresh: false });
 
         const finalUpdateSet = {
@@ -224,6 +226,7 @@ async function commitVerificationActivation({
             ]
         };
 
+        const hasExisting = Boolean(currentDoc || existing);
         const activated = await model.findOneAndUpdate(
             activationFilter,
             {
@@ -231,7 +234,7 @@ async function commitVerificationActivation({
                 $setOnInsert: { createdAt: now }
             },
             {
-                upsert: !existing && !currentDoc,
+                upsert: !hasExisting,
                 returnDocument: "after"
             }
         );
@@ -724,6 +727,42 @@ async function refreshDueTokens(options = {}) {
     return summary;
 }
 
+function buildCandidatePageResult({
+    candidates = [],
+    nextCursor = null,
+    hasMore = false,
+    scanned = 0,
+    statistics = null
+} = {}) {
+    const stats = statistics || {
+        scannedRecords: scanned,
+        uniqueUsers: 0,
+        usableUsers: 0,
+        missingScope: 0,
+        missingUserId: 0,
+        revoked: 0,
+        exhausted: 0,
+        byTokenField: { oauth: 0, adminOAuth: 0 }
+    };
+
+    const result = {
+        candidates,
+        nextCursor,
+        hasMore,
+        scanned,
+        statistics: stats,
+        get length() {
+            return candidates.length;
+        }
+    };
+
+    result[Symbol.iterator] = function* () {
+        yield* candidates;
+    };
+
+    return result;
+}
+
 async function listAccessTokenCandidates({
     requiredScopes = ["guilds.join"],
     targetGuildId = null,
@@ -733,6 +772,11 @@ async function listAccessTokenCandidates({
     env = process.env,
     seenUsers = null
 } = {}) {
+    const normalizedTargetGuildId = String(targetGuildId || "").trim();
+    if (!normalizedTargetGuildId) {
+        return buildCandidatePageResult();
+    }
+
     const config = getOAuthRefreshConfig(env);
     const tokenBranches = TOKEN_FIELDS.map(tokenField => ({
         [`${tokenField}.encryptedRefreshToken`]: { $exists: true, $ne: "" },
@@ -750,12 +794,10 @@ async function listAccessTokenCandidates({
                 { deletedAt: null }
             ]
         },
-        { $or: tokenBranches }
+        { $or: tokenBranches },
+        { "lastVerify.guildId": normalizedTargetGuildId },
+        { "lastVerify.result": "success" }
     ];
-
-    if (targetGuildId) {
-        andConditions.push({ "lastVerify.guildId": String(targetGuildId) });
-    }
 
     if (afterId) {
         andConditions.push({ _id: { $gt: afterId } });
@@ -780,7 +822,10 @@ async function listAccessTokenCandidates({
     const byTokenField = { oauth: 0, adminOAuth: 0 };
 
     for (const doc of docs) {
-        if (targetGuildId && doc.lastVerify?.guildId && String(doc.lastVerify.guildId) !== String(targetGuildId)) {
+        if (
+            String(doc.lastVerify?.guildId || "").trim() !== normalizedTargetGuildId ||
+            doc.lastVerify?.result !== "success"
+        ) {
             continue;
         }
         const userId = String(doc.discord?.userId || "").trim();
@@ -841,7 +886,10 @@ async function listAccessTokenCandidates({
                 tokenField: chosenField,
                 scope: chosenScope,
                 recordId: doc._id,
-                ...(doc.lastVerify ? { lastVerify: { guildId: doc.lastVerify.guildId } } : {})
+                lastVerify: {
+                    guildId: doc.lastVerify.guildId,
+                    result: doc.lastVerify.result
+                }
             });
         } else if (docHasMissingScope) {
             missingScope++;
@@ -856,7 +904,7 @@ async function listAccessTokenCandidates({
     const nextCursor = lastScanned ? (lastScanned._id || lastScanned.id) : null;
     const hasMore = docs.length >= limit && nextCursor !== null;
 
-    const result = {
+    return buildCandidatePageResult({
         candidates,
         nextCursor,
         hasMore,
@@ -870,17 +918,8 @@ async function listAccessTokenCandidates({
             revoked,
             exhausted,
             byTokenField
-        },
-        get length() {
-            return candidates.length;
         }
-    };
-
-    result[Symbol.iterator] = function* () {
-        yield* candidates;
-    };
-
-    return result;
+    });
 }
 
 function revealTokenStateForOwner(token = {}) {
@@ -964,11 +1003,11 @@ async function getOwnerTokenMetadata(userId, { model = OAuthUser, tokenFields = 
     }
 
     const doc = await model.findOne(filter)
-        .select(`discord.userId ${tokenFields.join(" ")}`)
+        .select(`discord.userId ${fields.join(" ")}`)
         .lean();
 
     const result = {};
-    for (const field of tokenFields) {
+    for (const field of fields) {
         result[field] = tokenMetadataState(doc?.[field] || {});
     }
     return result;

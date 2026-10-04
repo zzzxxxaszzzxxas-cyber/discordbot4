@@ -123,32 +123,20 @@ function summarizeJoinCandidates(docs = [], seenUsers = new Set()) {
         seenUsers.add(userId);
         summary.uniqueUsers++;
 
-        let chosenTokenField = null;
-        if (doc?.tokenField) {
-            const scope = doc.scope || doc[doc.tokenField]?.scope;
-            if (!scope || hasGuildsJoinScope(scope)) {
-                chosenTokenField = doc.tokenField;
-            }
-        } else {
-            for (const { tokenField } of CAMPAIGN_TOKEN_FIELDS) {
-                const tokenState = doc?.[tokenField];
-                if (!tokenState) continue;
-                if (tokenState.revokedAt) continue;
-                if (hasGuildsJoinScope(tokenState)) {
-                    chosenTokenField = tokenField;
-                    break;
-                }
-            }
-        }
-
-        if (!chosenTokenField) {
+        const tokenField = doc?.tokenField;
+        if (!tokenField || (tokenField !== "oauth" && tokenField !== "adminOAuth")) {
             summary.missingScope++;
             continue;
         }
 
-        summary.usableUsers++;
-        if (summary.byTokenField[chosenTokenField] !== undefined) {
-            summary.byTokenField[chosenTokenField]++;
+        const scope = doc.scope;
+        if (!scope || hasGuildsJoinScope(scope)) {
+            summary.usableUsers++;
+            if (summary.byTokenField[tokenField] !== undefined) {
+                summary.byTokenField[tokenField]++;
+            }
+        } else {
+            summary.missingScope++;
         }
     }
 
@@ -219,7 +207,17 @@ async function getUsableAccessToken({
     tokenManager = oauthTokenManager
 } = {}) {
     const userId = doc?.userId || doc?.discord?.userId;
-    const tokenField = doc?.tokenField || (doc?.adminOAuth ? "adminOAuth" : "oauth");
+    const tokenField = doc?.tokenField;
+    if (!tokenField || (tokenField !== "oauth" && tokenField !== "adminOAuth")) {
+        return {
+            ok: false,
+            failed: true,
+            accessToken: null,
+            refreshed: false,
+            reason: "invalid_candidate_token_field_missing",
+            code: "oauth_token_field_required"
+        };
+    }
     const res = await tokenManager.getAccessToken({
         userId,
         tokenField,
@@ -269,11 +267,16 @@ async function handleJoinCandidate({ doc, seenUsers, summary, targetGuildId, mod
     if (!userId || seenUsers.has(userId)) return false;
     seenUsers.add(userId);
 
+    const tokenField = doc?.tokenField;
+    if (!tokenField || (tokenField !== "oauth" && tokenField !== "adminOAuth")) {
+        recordJoinFailure(summary, userId, "token_invalid", "missing_or_invalid_candidate_token_field");
+        return true;
+    }
+
     if (doc?.lastVerify?.guildId && String(doc.lastVerify.guildId) !== String(targetGuildId)) {
         return false;
     }
 
-    const tokenField = doc?.tokenField || (doc?.adminOAuth ? "adminOAuth" : "oauth");
     const candidateDoc = { ...doc, userId, tokenField };
 
     try {
@@ -745,52 +748,6 @@ function getJoinCampaignStatus() {
     };
 }
 
-async function markTokenRefreshFailure({ model, doc, tokenField = "oauth", err, now = Date.now(), failMax = 5 }) {
-    const tokenState = doc?.[tokenField] || {};
-    const nextFailCount = Number(tokenState.refreshFailCount || 0) + 1;
-    const set = {
-        [`${tokenField}.refreshFailCount`]: nextFailCount,
-        [`${tokenField}.lastRefreshError`]: safeError(err),
-        updatedAt: now
-    };
-
-    if (nextFailCount >= failMax) set[`${tokenField}.revokedAt`] = now;
-
-    const filter = {
-        ...(doc?._id ? { _id: doc._id } : { "discord.userId": doc?.discord?.userId })
-    };
-    if (tokenState.encryptedRefreshToken) {
-        filter[`${tokenField}.encryptedRefreshToken`] = tokenState.encryptedRefreshToken;
-    }
-
-    try {
-        const result = await model.updateOne(filter, { $set: set });
-        const acknowledged = result?.acknowledged === true;
-        const matchedCount = Number(result?.matchedCount ?? result?.n ?? 0);
-        if (!acknowledged) {
-            return {
-                persisted: false,
-                stateChanged: false,
-                persistenceError: "refresh_failure_write_unacknowledged"
-            };
-        }
-        if (matchedCount !== 1) {
-            return {
-                persisted: false,
-                stateChanged: true,
-                persistenceError: "refresh_failure_state_changed"
-            };
-        }
-        return { persisted: true, stateChanged: false, persistenceError: null };
-    } catch (writeError) {
-        return {
-            persisted: false,
-            stateChanged: false,
-            persistenceError: safeError(writeError)
-        };
-    }
-}
-
 module.exports = {
     CAMPAIGN_TOKEN_FIELDS,
     getJoinCampaignConfig,
@@ -811,7 +768,6 @@ module.exports = {
         assertCampaignCanRun,
         readPositiveInt,
         makeCampaignId,
-        markTokenRefreshFailure,
         recordJoinFailure,
         buildJoinCampaignContext,
         buildJoinCampaignFailureDetails,

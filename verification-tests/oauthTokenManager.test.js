@@ -328,6 +328,7 @@ test("oauthTokenManager: listAccessTokenCandidates prioritizes oauth over adminO
     {
       _id: "doc1",
       discord: { userId: "user1" },
+      lastVerify: { guildId: "target-guild-123", result: "success" },
       oauth: {
         encryptedRefreshToken: encRefresh,
         scope: "identify guilds.join",
@@ -343,6 +344,7 @@ test("oauthTokenManager: listAccessTokenCandidates prioritizes oauth over adminO
     {
       _id: "doc2",
       discord: { userId: "user2" },
+      lastVerify: { guildId: "target-guild-123", result: "success" },
       oauth: {
         encryptedRefreshToken: encRefresh,
         scope: "identify email", // missing guilds.join
@@ -362,6 +364,7 @@ test("oauthTokenManager: listAccessTokenCandidates prioritizes oauth over adminO
 
   const result = await manager.listAccessTokenCandidates({
     requiredScopes: ["guilds.join"],
+    targetGuildId: "target-guild-123",
     model
   });
   const candidates = result.candidates;
@@ -371,13 +374,21 @@ test("oauthTokenManager: listAccessTokenCandidates prioritizes oauth over adminO
     userId: "user1",
     tokenField: "oauth",
     scope: "identify guilds.join",
-    recordId: "doc1"
+    recordId: "doc1",
+    lastVerify: {
+      guildId: "target-guild-123",
+      result: "success"
+    }
   });
   expect(candidates[1]).toEqual({
     userId: "user2",
     tokenField: "adminOAuth",
     scope: "identify guilds.join",
-    recordId: "doc2"
+    recordId: "doc2",
+    lastVerify: {
+      guildId: "target-guild-123",
+      result: "success"
+    }
   });
   expect(candidates[0].encryptedAccessToken).toBeUndefined();
   expect(candidates[0].accessToken).toBeUndefined();
@@ -953,6 +964,7 @@ test("oauthTokenManager: listAccessTokenCandidates returns nextCursor and hasMor
     {
       _id: "doc-page-1",
       discord: { userId: "user-page-1" },
+      lastVerify: { guildId: "target-guild-123", result: "success" },
       oauth: {
         encryptedRefreshToken: encRefresh,
         scope: "identify guilds.join",
@@ -963,6 +975,7 @@ test("oauthTokenManager: listAccessTokenCandidates returns nextCursor and hasMor
     {
       _id: "doc-page-2",
       discord: { userId: "user-page-2" },
+      lastVerify: { guildId: "target-guild-123", result: "success" },
       oauth: {
         encryptedRefreshToken: encRefresh,
         scope: "identify email", // missing guilds.join
@@ -978,6 +991,7 @@ test("oauthTokenManager: listAccessTokenCandidates returns nextCursor and hasMor
 
   const page = await manager.listAccessTokenCandidates({
     requiredScopes: ["guilds.join"],
+    targetGuildId: "target-guild-123",
     limit: 2,
     model
   });
@@ -1413,13 +1427,19 @@ test("oauthTokenManager: listAccessTokenCandidates enforces targetGuildId consen
       _id: "doc-target-1",
       discord: { userId: "user-target-1" },
       oauth: { encryptedRefreshToken: encRefresh, scope: "identify guilds.join", revokedAt: null },
-      lastVerify: { guildId: "target-guild-123" }
+      lastVerify: { guildId: "target-guild-123", result: "success" }
     },
     {
       _id: "doc-target-2",
       discord: { userId: "user-target-2" },
       oauth: { encryptedRefreshToken: encRefresh, scope: "identify guilds.join", revokedAt: null },
-      lastVerify: { guildId: "different-guild-456" }
+      lastVerify: { guildId: "different-guild-456", result: "success" }
+    },
+    {
+      _id: "doc-target-3",
+      discord: { userId: "user-target-3" },
+      oauth: { encryptedRefreshToken: encRefresh, scope: "identify guilds.join", revokedAt: null },
+      lastVerify: { guildId: "target-guild-123", result: "failed" }
     }
   ];
 
@@ -1441,10 +1461,158 @@ test("oauthTokenManager: listAccessTokenCandidates enforces targetGuildId consen
   const andClauses = capturedFilter.$and;
   expect(Array.isArray(andClauses)).toBe(true);
   expect(andClauses.some(clause => clause["lastVerify.guildId"] === "target-guild-123")).toBe(true);
+  expect(andClauses.some(clause => clause["lastVerify.result"] === "success")).toBe(true);
   expect(andClauses.at(-1)).toEqual({ _id: { $gt: "doc-target-0" } });
 
   expect(page.candidates.length).toBe(1);
   expect(page.candidates[0].userId).toBe("user-target-1");
-  expect(page.candidates[0].lastVerify).toEqual({ guildId: "target-guild-123" });
+  expect(page.candidates[0].lastVerify).toEqual({ guildId: "target-guild-123", result: "success" });
 });
+
+test("oauthTokenManager: listAccessTokenCandidates strictly enforces consent fail-closed matrix", async () => {
+  const encRefresh = encryptToken("valid-refresh");
+  const docs = [
+    // Guild matches, result === failed -> 0 candidate
+    {
+      _id: "doc-failed",
+      discord: { userId: "user-failed" },
+      oauth: { encryptedRefreshToken: encRefresh, scope: "guilds.join", revokedAt: null },
+      lastVerify: { guildId: "guild-A", result: "failed" }
+    },
+    // Guild matches, result === success -> 1 candidate
+    {
+      _id: "doc-success",
+      discord: { userId: "user-success" },
+      oauth: { encryptedRefreshToken: encRefresh, scope: "guilds.join", revokedAt: null },
+      lastVerify: { guildId: "guild-A", result: "success" }
+    },
+    // Guild does not match, result === success -> 0 candidate
+    {
+      _id: "doc-other-guild",
+      discord: { userId: "user-other-guild" },
+      oauth: { encryptedRefreshToken: encRefresh, scope: "guilds.join", revokedAt: null },
+      lastVerify: { guildId: "guild-B", result: "success" }
+    }
+  ];
+
+  const model = {
+    find: jest.fn(() => scanQuery(docs))
+  };
+
+  // 1. targetGuildId missing / null / empty -> fail-closed (0 candidates, 0 scanned, model.find not called)
+  const pageNoGuild = await manager.listAccessTokenCandidates({
+    requiredScopes: ["guilds.join"],
+    targetGuildId: null,
+    model
+  });
+  expect(pageNoGuild.candidates.length).toBe(0);
+  expect(pageNoGuild.scanned).toBe(0);
+  expect(pageNoGuild.length).toBe(0);
+  expect(model.find).not.toHaveBeenCalled();
+
+  const pageEmptyGuild = await manager.listAccessTokenCandidates({
+    requiredScopes: ["guilds.join"],
+    targetGuildId: "   ",
+    model
+  });
+  expect(pageEmptyGuild.candidates.length).toBe(0);
+  expect(pageEmptyGuild.scanned).toBe(0);
+  expect(model.find).not.toHaveBeenCalled();
+
+  // 2. targetGuildId = guild-A -> only doc-success is returned (doc-failed and doc-other-guild excluded)
+  const pageGuildA = await manager.listAccessTokenCandidates({
+    requiredScopes: ["guilds.join"],
+    targetGuildId: "guild-A",
+    model
+  });
+  expect(pageGuildA.candidates.length).toBe(1);
+  expect(pageGuildA.candidates[0].userId).toBe("user-success");
+  expect(pageGuildA.candidates[0].tokenField).toBe("oauth");
+  expect(pageGuildA.candidates[0].lastVerify).toEqual({ guildId: "guild-A", result: "success" });
+});
+
+test("oauthTokenManager: commitVerificationActivation fresh-reads current token version from DB inside lock", async () => {
+  let capturedUpdate = null;
+  let findOneCalled = false;
+
+  const model = {
+    findOne: jest.fn((filter) => {
+      findOneCalled = true;
+      return {
+        select: jest.fn((projection) => ({
+          lean: jest.fn().mockResolvedValue({
+            discord: { userId: "user-cas-test" },
+            oauth: { version: 7 }
+          })
+        }))
+      };
+    }),
+    findOneAndUpdate: jest.fn((filter, update, options) => {
+      capturedUpdate = update;
+      return Promise.resolve({ _id: "doc-cas", ...update.$set });
+    })
+  };
+
+  // Route passes snapshot state without oauth.version
+  const existingSnapshotState = {
+    _id: "doc-cas",
+    discord: { userId: "user-cas-test" },
+    snapshotMeta: { activation: { snapshotVersion: 3 } }
+  };
+
+  const result = await manager.commitVerificationActivation({
+    profileUserId: "user-cas-test",
+    tokenData: {
+      access_token: "new-access",
+      refresh_token: "new-refresh",
+      expires_in: 7200,
+      scope: "identify guilds.join"
+    },
+    updateSet: {},
+    safeAttemptStartedAt: 5000,
+    existing: existingSnapshotState,
+    model,
+    now: 6000
+  });
+
+  expect(result.ok).toBe(true);
+  expect(findOneCalled).toBe(true);
+  expect(model.findOne).toHaveBeenCalledWith({ "discord.userId": "user-cas-test" });
+  // Previous version was 7 from fresh DB read inside lock, so committed version MUST be 8, not 1!
+  expect(capturedUpdate.$set.oauth.version).toBe(8);
+});
+
+test("oauthTokenManager: getOwnerTokenMetadata normalizes string tokenFields without throwing TypeError", async () => {
+  const encAccess = encryptToken("plain-access");
+  const model = {
+    findOne: jest.fn((filter) => ({
+      select: jest.fn((projection) => {
+        expect(projection).toBe("discord.userId oauth");
+        return {
+          lean: jest.fn().mockResolvedValue({
+            discord: { userId: "u-owner-single" },
+            oauth: {
+              encryptedAccessToken: encAccess,
+              encryptedRefreshToken: null,
+              scope: "identify",
+              expiresAt: Date.now() + 100000
+            }
+          })
+        };
+      })
+    }))
+  };
+
+  // Pass string "oauth" instead of array ["oauth"]
+  const metadata = await manager.getOwnerTokenMetadata("u-owner-single", {
+    tokenFields: "oauth",
+    model
+  });
+
+  expect(metadata).toBeDefined();
+  expect(metadata.oauth).toBeDefined();
+  expect(metadata.oauth.hasAccessToken).toBe(true);
+  expect(metadata.oauth.scope).toBe("identify");
+});
+
 

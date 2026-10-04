@@ -10,32 +10,24 @@ const {
 test("join campaign candidate summary uses only tokens with guilds.join", (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
     const docs = [
         {
-            discord: { userId: "100" },
-            oauth: {
-                encryptedRefreshToken: "verify-refresh",
-                scope: "identify guilds.join"
-            }
+            userId: "100",
+            tokenField: "oauth",
+            scope: "identify guilds.join"
         },
         {
-            discord: { userId: "200" },
-            adminOAuth: {
-                encryptedRefreshToken: "admin-refresh",
-                scope: "identify guilds guilds.join"
-            }
+            userId: "200",
+            tokenField: "adminOAuth",
+            scope: "identify guilds guilds.join"
         },
         {
-            discord: { userId: "300" },
-            oauth: {
-                encryptedRefreshToken: "verify-refresh-2",
-                scope: "identify email"
-            }
+            userId: "300",
+            tokenField: "oauth",
+            scope: "identify email"
         },
         {
-            discord: { userId: "200" },
-            oauth: {
-                encryptedRefreshToken: "duplicate-refresh",
-                scope: "identify guilds.join"
-            }
+            userId: "200",
+            tokenField: "oauth",
+            scope: "identify guilds.join"
         }
     ];
 
@@ -56,7 +48,10 @@ test("join campaign refreshes expiring token before adding member", async (t) =>
     const docs = [
         {
             _id: "doc1",
+            userId: "100",
+            tokenField: "oauth",
             discord: { userId: "100" },
+            lastVerify: { guildId: "123456789012345678", result: "success" },
             oauth: {
                 encryptedAccessToken: "old-access",
                 encryptedRefreshToken: "old-refresh",
@@ -138,7 +133,10 @@ test("join campaign records refresh-failure persistence results without stopping
     const docs = [
         {
             _id: "refresh-fails",
+            userId: "100",
+            tokenField: "oauth",
             discord: { userId: "100" },
+            lastVerify: { guildId: "123456789012345678", result: "success" },
             oauth: {
                 encryptedAccessToken: "old-access",
                 encryptedRefreshToken: "old-refresh",
@@ -148,7 +146,10 @@ test("join campaign records refresh-failure persistence results without stopping
         },
         {
             _id: "still-works",
+            userId: "200",
+            tokenField: "oauth",
             discord: { userId: "200" },
+            lastVerify: { guildId: "123456789012345678", result: "success" },
             oauth: {
                 encryptedAccessToken: "enc:usable-access",
                 encryptedRefreshToken: "usable-refresh",
@@ -209,58 +210,44 @@ test("join campaign records refresh-failure persistence results without stopping
     t.assert.equal(finishPayload.includes("usable-access"), false);
 });
 
-test("refresh failure persistence is token-bound and reports acknowledgement or state conflicts", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
-    const doc = {
-        _id: "doc1",
-        oauth: { encryptedRefreshToken: "current-refresh", refreshFailCount: 0 }
-    };
-    const writes = [];
-    const persisted = await joinCampaign._test.markTokenRefreshFailure({
-        model: {
-            updateOne: async (filter, update) => {
-                writes.push({ filter, update });
-                return { acknowledged: true, matchedCount: 1 };
+test("join campaign candidate missing tokenField fails closed without guessing", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
+    const docs = [
+        {
+            userId: "user-missing-field",
+            oauth: { encryptedAccessToken: "valid", scope: "identify guilds.join" },
+            adminOAuth: { encryptedAccessToken: "valid", scope: "identify guilds.join" }
+        }
+    ];
+
+    const summary = await joinCampaign.executeJoinCampaign({
+        targetGuildId: "123456789012345678",
+        candidateDocs: docs,
+        oauthTokenManager: {
+            getAccessToken: async () => {
+                t.fail("Manager getAccessToken should not be called for invalid candidate without tokenField");
             }
         },
-        doc,
-        tokenField: "oauth",
-        err: new Error("refresh rejected"),
-        now: 100
+        discordApi: {
+            getGuildMemberWithBot: async () => null,
+            addMemberToGuild: async () => ({ ok: true, status: 201 })
+        },
+        config: {
+            enabled: true,
+            allowedGuilds: new Set(["123456789012345678"]),
+            delayMs: 0,
+            progressEvery: 1,
+            refreshMarginMs: 60 * 60 * 1000,
+            failMax: 5
+        },
+        sendStartLog: false,
+        sendFinishLog: false,
+        sleep: async () => {}
     });
-    t.assert.deepEqual(persisted, { persisted: true, stateChanged: false, persistenceError: null });
-    t.assert.equal(writes[0].filter["oauth.encryptedRefreshToken"], "current-refresh");
 
-    const unacknowledged = await joinCampaign._test.markTokenRefreshFailure({
-        model: { updateOne: async () => ({ acknowledged: false, matchedCount: 1 }) },
-        doc,
-        tokenField: "oauth",
-        err: new Error("refresh rejected")
-    });
-    t.assert.equal(unacknowledged.persisted, false);
-    t.assert.equal(unacknowledged.stateChanged, false);
-
-    for (const result of [null, undefined, {}, { matchedCount: 1 }]) {
-        const missingAcknowledgement = await joinCampaign._test.markTokenRefreshFailure({
-            model: { updateOne: async () => result },
-            doc,
-            tokenField: "oauth",
-            err: new Error("refresh rejected")
-        });
-        t.assert.deepEqual(missingAcknowledgement, {
-            persisted: false,
-            stateChanged: false,
-            persistenceError: "refresh_failure_write_unacknowledged"
-        });
-    }
-
-    const stateChanged = await joinCampaign._test.markTokenRefreshFailure({
-        model: { updateOne: async () => ({ acknowledged: true, matchedCount: 0 }) },
-        doc,
-        tokenField: "oauth",
-        err: new Error("refresh rejected")
-    });
-    t.assert.equal(stateChanged.persisted, false);
-    t.assert.equal(stateChanged.stateChanged, true);
+    t.assert.equal(summary.joined, 0);
+    t.assert.equal(summary.failed, 1);
+    t.assert.equal(summary.tokenInvalid, 1);
+    t.assert.equal(summary.errors.some(e => e.detail === "missing_or_invalid_candidate_token_field"), true);
 });
 
 test("Thai join campaign log summarizes counts without raw tokens", (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
@@ -377,10 +364,10 @@ test("join campaign follows database cursor batches until every OAuth user is sc
     const calls = [];
     const batches = [
         [
-            { _id: "1", discord: { userId: "100" }, oauth: { encryptedRefreshToken: "a", scope: "guilds.join" } },
-            { _id: "2", discord: { userId: "200" }, oauth: { encryptedRefreshToken: "b", scope: "guilds.join" } }
+            { _id: "1", discord: { userId: "100" }, lastVerify: { guildId: "123456789012345678", result: "success" }, oauth: { encryptedRefreshToken: "a", scope: "guilds.join" } },
+            { _id: "2", discord: { userId: "200" }, lastVerify: { guildId: "123456789012345678", result: "success" }, oauth: { encryptedRefreshToken: "b", scope: "guilds.join" } }
         ],
-        [{ _id: "3", discord: { userId: "200" }, oauth: { encryptedRefreshToken: "duplicate", scope: "guilds.join" } }]
+        [{ _id: "3", discord: { userId: "200" }, lastVerify: { guildId: "123456789012345678", result: "success" }, oauth: { encryptedRefreshToken: "duplicate", scope: "guilds.join" } }]
     ];
     const model = {
         find(filter) {
