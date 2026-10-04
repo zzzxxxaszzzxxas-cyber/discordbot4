@@ -544,26 +544,29 @@ test("oauthTokenManager: refresh persistence conflicts are skipped without incre
   expect(model.updateOne).toHaveBeenCalledTimes(1);
 });
 
-test("oauthTokenManager: revokeToken marks revokedAt in MongoDB and calls Discord API", async () => {
+test("oauthTokenManager: revokeToken atomically sets revokedAt, increments version, and calls Discord API", async () => {
   const encRefresh = encryptToken("refresh-to-revoke");
-  let saved = false;
+  let updateFilter = null;
+  let updatePayload = null;
   const doc = {
     _id: "doc-revoke",
     discord: { userId: "user-to-revoke" },
     oauth: {
       encryptedRefreshToken: encRefresh,
-      revokedAt: null
-    },
-    save: jest.fn(() => {
-      saved = true;
-      return Promise.resolve();
-    })
+      revokedAt: null,
+      version: 3
+    }
   };
 
   const model = {
     findOne: jest.fn(() => ({
       select: () => Promise.resolve(doc)
-    }))
+    })),
+    updateOne: jest.fn((filter, update) => {
+      updateFilter = filter;
+      updatePayload = update;
+      return Promise.resolve({ modifiedCount: 1 });
+    })
   };
 
   const discord = {
@@ -579,7 +582,219 @@ test("oauthTokenManager: revokeToken marks revokedAt in MongoDB and calls Discor
 
   expect(result.ok).toBe(true);
   expect(result.revoked).toBe(true);
-  expect(saved).toBe(true);
-  expect(doc.oauth.revokedAt).toBe(77777);
+  expect(updateFilter).toMatchObject({ _id: "doc-revoke", "oauth.version": 3 });
+  expect(updatePayload.$set["oauth.revokedAt"]).toBe(77777);
+  expect(updatePayload.$inc["oauth.version"]).toBe(1);
   expect(discord.revokeToken).toHaveBeenCalledWith("refresh-to-revoke", "refresh_token");
+});
+
+test("oauthTokenManager: initial authorization leaves lastRefreshAt as null and sets receivedAt", () => {
+  const stored = manager.prepareStoredToken({
+    access_token: "init-access",
+    refresh_token: "init-refresh",
+    expires_in: 3600,
+    scope: "identify guilds.join"
+  }, { now: 1000, previousVersion: 0, isRefresh: false });
+
+  expect(stored.lastRefreshAt).toBeNull();
+  expect(stored.rawTokenMeta.receivedAt).toBe(1000);
+  expect(stored.rawTokenMeta.expiresIn).toBe(3600);
+});
+
+test("oauthTokenManager: commitVerificationActivation validates tokenData before storing", async () => {
+  const model = { findOneAndUpdate: jest.fn() };
+
+  await expect(manager.commitVerificationActivation({
+    profileUserId: "u1",
+    tokenData: null,
+    updateSet: {},
+    model
+  })).rejects.toMatchObject({ code: "oauth_token_invalid_payload" });
+
+  await expect(manager.commitVerificationActivation({
+    profileUserId: "u1",
+    tokenData: { access_token: "a" },
+    updateSet: {},
+    model
+  })).rejects.toMatchObject({ code: "oauth_token_missing_refresh_token" });
+
+  await expect(manager.commitVerificationActivation({
+    profileUserId: "u1",
+    tokenData: { access_token: "a", refresh_token: "r", expires_in: -1 },
+    updateSet: {},
+    model
+  })).rejects.toMatchObject({ code: "oauth_token_invalid_expires_in" });
+
+  expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+});
+
+test("oauthTokenManager: migrateStoredTokenEncryption accurately decrypts and re-encrypts exact plaintext (preventing object corruption bug)", async () => {
+  const originalPlaintext = "legacy-token-secret-12345";
+  const legacyEncrypted = encryptLegacy(originalPlaintext);
+
+  let updatedValue = null;
+  const docs = [{
+    _id: "doc-mig",
+    oauth: {
+      encryptedAccessToken: legacyEncrypted,
+      encryptedRefreshToken: "v3:gcm:already-v3"
+    }
+  }];
+
+  const model = {
+    find: jest.fn(() => ({
+      select: () => ({
+        sort: () => ({
+          limit: () => ({
+            lean: () => Promise.resolve(docs)
+          })
+        })
+      })
+    })),
+    updateOne: jest.fn((filter, update) => {
+      expect(filter).toEqual({ _id: "doc-mig", "oauth.encryptedAccessToken": legacyEncrypted });
+      updatedValue = update.$set["oauth.encryptedAccessToken"];
+      return Promise.resolve({ modifiedCount: 1 });
+    }),
+    countDocuments: jest.fn(() => Promise.resolve(0))
+  };
+
+  const summary = await manager.migrateStoredTokenEncryption({
+    dryRun: false,
+    model
+  });
+
+  expect(summary.migratedFields).toBe(1);
+  expect(summary.failedFields).toBe(0);
+  expect(updatedValue).toMatch(/^v3:gcm:/);
+
+  // CRITICAL REGRESSION ASSERTION: decrypting the re-encrypted value MUST yield the original plaintext, NOT JSON
+  const decrypted = manager._test.decryptToken(updatedValue);
+  expect(decrypted).toBe(originalPlaintext);
+  expect(typeof decrypted).toBe("string");
+  expect(decrypted).not.toContain("needsMigration");
+  expect(decrypted).not.toContain("plaintext");
+});
+
+test("oauthTokenManager: in-flight revoke prevents concurrent refresh from restoring un-revoked token", async () => {
+  const encRefresh = encryptToken("refresh-concurrent");
+  const doc = {
+    _id: "doc-race",
+    discord: { userId: "user-race" },
+    oauth: {
+      encryptedAccessToken: encryptToken("old-access"),
+      encryptedRefreshToken: encRefresh,
+      expiresAt: 100,
+      version: 2,
+      revokedAt: null
+    }
+  };
+
+  const model = {
+    findById: jest.fn(() => freshQuery(() => ({
+      ...doc,
+      oauth: {
+        ...doc.oauth,
+        // During in-flight refresh, owner revokes token:
+        revokedAt: 5000,
+        version: 3
+      }
+    }))),
+    updateOne: jest.fn(() => Promise.resolve({ modifiedCount: 0 }))
+  };
+
+  const discord = {
+    refreshToken: jest.fn(() => Promise.resolve({
+      access_token: "new-access",
+      refresh_token: "new-refresh",
+      expires_in: 3600
+    }))
+  };
+
+  const outcome = await manager._test.performTokenRefreshUnderLock({
+    doc,
+    model,
+    discord,
+    now: 6000,
+    force: true
+  });
+
+  expect(outcome.ok).toBe(false);
+  expect(outcome.code).toBe("token_revoked");
+  expect(model.updateOne).not.toHaveBeenCalled();
+});
+
+test("oauthTokenManager: getAccessToken and background query exclude soft-deleted users", async () => {
+  const model = {
+    findOne: jest.fn(() => ({
+      select: () => ({
+        lean: () => Promise.resolve({
+          discord: { userId: "deleted-user" },
+          deletedAt: new Date(),
+          oauth: {
+            encryptedAccessToken: encryptToken("valid-access"),
+            expiresAt: Date.now() + 60000
+          }
+        })
+      })
+    }))
+  };
+
+  const res = await manager.getAccessToken({
+    userId: "deleted-user",
+    model
+  });
+
+  expect(res.ok).toBe(false);
+  expect(res.code).toBe("user_deleted");
+
+  const query = manager._test.buildRefreshQuery(1000, 5000, 5, "oauth");
+  expect(query.$and).toBeDefined();
+  const deletedCondition = query.$and.find(c => c.$or && c.$or.some(cond => "deletedAt" in cond));
+  expect(deletedCondition).toBeDefined();
+});
+
+test("oauthTokenManager: getOwnerTokenMetadata returns non-cryptographic token status DTO", async () => {
+  const encAccess = encryptToken("raw-access-secret");
+  const encRefresh = encryptToken("raw-refresh-secret");
+  const doc = {
+    discord: { userId: "user-dto" },
+    oauth: {
+      encryptedAccessToken: encAccess,
+      encryptedRefreshToken: encRefresh,
+      scope: "identify guilds.join",
+      tokenType: "Bearer",
+      expiresAt: 50000,
+      lastRefreshAt: 10000,
+      refreshFailCount: 0,
+      revokedAt: null,
+      rawTokenMeta: { receivedAt: 5000 }
+    },
+    adminOAuth: {}
+  };
+
+  const model = {
+    findOne: jest.fn(() => ({
+      select: () => ({
+        lean: () => Promise.resolve(doc)
+      })
+    }))
+  };
+
+  const metadata = await manager.getOwnerTokenMetadata("user-dto", { model });
+
+  expect(metadata.oauth).toMatchObject({
+    hasAccessToken: true,
+    hasRefreshToken: true,
+    scope: "identify guilds.join",
+    tokenType: "Bearer",
+    issuedAt: 5000,
+    expiresAt: 50000,
+    lastRefreshAt: 10000,
+    revokedAt: null
+  });
+  expect(metadata.oauth.accessToken).toBeUndefined();
+  expect(metadata.oauth.refreshToken).toBeUndefined();
+  expect(metadata.oauth.encryptedAccessToken).toBeUndefined();
+  expect(metadata.oauth.encryptedRefreshToken).toBeUndefined();
 });

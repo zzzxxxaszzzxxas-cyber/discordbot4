@@ -53,3 +53,59 @@ describe('OAuth callback integration contracts', () => {
         expect(callbackRouteSource).not.toContain('storagePolicy = {}');
     });
 });
+
+describe('OAuth Single Authority source and architectural contracts', () => {
+    const oauthTokenManager = require('../discord/core/oauthTokenManager');
+    const joinCampaignSource = fs.readFileSync('discord/features/joinCampaign.js', 'utf8');
+    const ownerServiceSource = fs.readFileSync('discord/verification/ownerService.js', 'utf8');
+    const encryptionMigrationSource = fs.readFileSync('discord/verification/services/encryptionMigration.js', 'utf8');
+    const lifecycleSource = fs.readFileSync('discord/verification/lifecycle.js', 'utf8');
+
+    test('joinCampaign delegates candidate selection and token retrieval to oauthTokenManager', () => {
+        expect(joinCampaignSource).toContain('require("../core/oauthTokenManager")');
+        expect(joinCampaignSource).toContain('tokenManager.listAccessTokenCandidates(');
+        expect(joinCampaignSource).toContain('tokenManager.getAccessToken(');
+        expect(joinCampaignSource).not.toMatch(/decryptToken\(/);
+    });
+
+    test('ownerService delegates token recovery, metadata and raw reveal to oauthTokenManager', () => {
+        expect(ownerServiceSource).toContain('oauthTokenManager.getRecoveryStatuses(');
+        expect(ownerServiceSource).toContain('oauthTokenManager.getOwnerTokenMetadata(');
+        expect(ownerServiceSource).toContain('oauthTokenManager.getOwnerTokenState(');
+        expect(ownerServiceSource).not.toMatch(/\.select\([^)]*\boauth\b[^)]*\)/);
+    });
+
+    test('encryptionMigration delegates oauth_tokens to oauthTokenManager', () => {
+        expect(encryptionMigrationSource).toContain('oauthTokenManager.migrateStoredTokenEncryption(');
+        expect(encryptionMigrationSource).not.toContain('id: "oauth_tokens"');
+    });
+
+    test('verification lifecycle awaits oauthTokenManager.start', () => {
+        expect(lifecycleSource).toContain('await tokenManager.start()');
+    });
+
+    test('oauthTokenManager encapsulates low-level crypto primitives in internal _test object', () => {
+        expect(oauthTokenManager.encryptToken).toBeUndefined();
+        expect(oauthTokenManager.decryptToken).toBeUndefined();
+        expect(oauthTokenManager.decryptTokenForMigration).toBeUndefined();
+        expect(typeof oauthTokenManager._test?.encryptToken).toBe('function');
+        expect(typeof oauthTokenManager._test?.decryptToken).toBe('function');
+        expect(typeof oauthTokenManager._test?.decryptTokenForMigration).toBe('function');
+    });
+
+    test('single authority invariant: no external verification/feature file calls decryptToken directly on oauth tokens', () => {
+        const prodFiles = [
+            'discord/verification/routes/oauth.js',
+            'discord/verification/routes/oauthStart.js',
+            'discord/verification/ownerService.js',
+            'discord/verification/services/encryptionMigration.js',
+            'discord/verification/lifecycle.js',
+            'discord/features/joinCampaign.js'
+        ];
+        for (const file of prodFiles) {
+            const content = fs.readFileSync(file, 'utf8');
+            expect(content).not.toMatch(/cryptoUtils\.decryptToken/);
+        }
+    });
+});
+

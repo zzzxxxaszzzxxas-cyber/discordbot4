@@ -122,7 +122,7 @@ function validateTokenData(tokenData) {
     return true;
 }
 
-function prepareStoredToken(tokenData = {}, { now = Date.now(), previousVersion = 0 } = {}) {
+function prepareStoredToken(tokenData = {}, { now = Date.now(), previousVersion = 0, isRefresh = false } = {}) {
     const rawAccess = String(tokenData?.access_token || "").trim();
     const rawRefresh = String(tokenData?.refresh_token || "").trim();
     const expiresIn = Number(tokenData?.expires_in || 0);
@@ -133,7 +133,7 @@ function prepareStoredToken(tokenData = {}, { now = Date.now(), previousVersion 
         expiresAt: expiresIn > 0 ? now + (expiresIn * 1000) : null,
         scope: String(tokenData?.scope || ""),
         tokenType: String(tokenData?.token_type || "Bearer"),
-        lastRefreshAt: now,
+        lastRefreshAt: isRefresh ? now : null,
         refreshFailCount: 0,
         lastRefreshError: null,
         revokedAt: null,
@@ -170,8 +170,10 @@ async function commitVerificationActivation({
         throw error;
     }
 
+    validateTokenData(tokenData);
+
     const previousVersion = Number(existing?.oauth?.version || 0);
-    const oauthPayload = prepareStoredToken(tokenData, { now, previousVersion });
+    const oauthPayload = prepareStoredToken(tokenData, { now, previousVersion, isRefresh: false });
 
     const finalUpdateSet = {
         ...updateSet,
@@ -248,7 +250,7 @@ async function readFreshOAuthDocument(model, docOrId, tokenField) {
     const id = docOrId?._id || docOrId;
     let query = model.findById(id);
     if (query && typeof query.select === "function") {
-        query = query.select({ discord: 1, [tokenField]: 1 });
+        query = query.select({ discord: 1, deletedAt: 1, [tokenField]: 1 });
     }
     if (query && typeof query.lean === "function") query = query.lean();
     return await query;
@@ -279,6 +281,7 @@ async function markRefreshFailure(doc, err, { model = OAuthUser, now = Date.now(
             {
                 _id: doc._id,
                 [tokenPath(tokenField, "encryptedRefreshToken")]: previousRefreshToken,
+                [tokenPath(tokenField, "revokedAt")]: { $in: [null] },
                 ...versionCondition(tokenField, previousVersion)
             },
             { $set: set }
@@ -324,6 +327,9 @@ async function performTokenRefreshUnderLock({
     const lockUserId = doc.discord?.userId || String(doc._id);
     const fresh = await readFreshOAuthDocument(model, doc, tokenField);
     if (!fresh) return conflictOutcome(tokenField, lockUserId, "document_missing");
+    if (fresh.deletedAt) {
+        return { ok: false, code: "user_deleted", reason: "User is soft-deleted", userId: lockUserId, tokenField };
+    }
 
     const userId = fresh.discord?.userId || lockUserId;
     const tokenState = fresh[tokenField] || {};
@@ -382,11 +388,12 @@ async function performTokenRefreshUnderLock({
         return markRefreshFailure(fresh, valErr, { model, now, failMax, tokenField });
     }
 
-    const nextPayload = prepareStoredToken(tokenData, { now, previousVersion });
+    const nextPayload = prepareStoredToken(tokenData, { now, previousVersion, isRefresh: true });
     const result = await model.updateOne(
         {
             _id: fresh._id,
             [tokenPath(tokenField, "encryptedRefreshToken")]: previousRefreshTokenEncrypted,
+            [tokenPath(tokenField, "revokedAt")]: { $in: [null] },
             ...versionCondition(tokenField, previousVersion)
         },
         {
@@ -433,12 +440,18 @@ async function getAccessToken({
         throw error;
     }
 
-    const doc = await model.findOne({ "discord.userId": String(userId) })
-        .select({ discord: 1, [tokenField]: 1 })
+    const doc = await model.findOne({
+        "discord.userId": String(userId),
+        $or: [
+            { deletedAt: { $exists: false } },
+            { deletedAt: null }
+        ]
+    })
+        .select({ discord: 1, deletedAt: 1, [tokenField]: 1 })
         .lean();
 
-    if (!doc) {
-        return { ok: false, code: "user_not_found", reason: "User not found in OAuth registry", userId, tokenField };
+    if (!doc || doc.deletedAt) {
+        return { ok: false, code: doc ? "user_deleted" : "user_not_found", reason: doc ? "User is soft-deleted" : "User not found in OAuth registry", userId, tokenField };
     }
 
     const tokenState = doc[tokenField] || {};
@@ -482,19 +495,27 @@ async function getAccessToken({
 
 function buildRefreshQuery(now, marginMs, failMax, tokenField = "oauth") {
     return {
-        [tokenPath(tokenField, "encryptedRefreshToken")]: { $exists: true, $ne: "" },
-        [tokenPath(tokenField, "revokedAt")]: { $in: [null] },
         $or: [
             { [tokenPath(tokenField, "expiresAt")]: { $lte: now + marginMs } },
             { [tokenPath(tokenField, "expiresAt")]: { $exists: false } },
             { [tokenPath(tokenField, "expiresAt")]: null }
         ],
-        $and: [{
-            $or: [
-                { [tokenPath(tokenField, "refreshFailCount")]: { $exists: false } },
-                { [tokenPath(tokenField, "refreshFailCount")]: { $lt: failMax } }
-            ]
-        }]
+        $and: [
+            {
+                $or: [
+                    { [tokenPath(tokenField, "refreshFailCount")]: { $exists: false } },
+                    { [tokenPath(tokenField, "refreshFailCount")]: { $lt: failMax } }
+                ]
+            },
+            {
+                $or: [
+                    { deletedAt: { $exists: false } },
+                    { deletedAt: null }
+                ]
+            }
+        ],
+        [tokenPath(tokenField, "encryptedRefreshToken")]: { $exists: true, $ne: "" },
+        [tokenPath(tokenField, "revokedAt")]: { $in: [null] }
     };
 }
 
@@ -765,6 +786,40 @@ async function getOwnerTokenState(userId, { model = OAuthUser, tokenFields = TOK
     return result;
 }
 
+function tokenMetadataState(token = {}) {
+    const issuedAt = Number(token.rawTokenMeta?.receivedAt || 0) || null;
+    const expiresAt = Number(token.expiresAt || 0) || null;
+    return {
+        hasAccessToken: !!token.encryptedAccessToken,
+        hasRefreshToken: !!token.encryptedRefreshToken,
+        scope: token.scope || "",
+        tokenType: token.tokenType || "",
+        issuedAt,
+        expiresAt,
+        lifetimeMs: issuedAt && expiresAt ? Math.max(0, expiresAt - issuedAt) : null,
+        lastRefreshAt: token.lastRefreshAt || null,
+        refreshFailCount: Number(token.refreshFailCount || 0),
+        lastRefreshError: token.lastRefreshError || null,
+        revokedAt: token.revokedAt || null
+    };
+}
+
+async function getOwnerTokenMetadata(userId, { model = OAuthUser, tokenFields = TOKEN_FIELDS } = {}) {
+    if (!userId) {
+        return { oauth: null, adminOAuth: null };
+    }
+
+    const doc = await model.findOne({ "discord.userId": String(userId) })
+        .select(`discord.userId ${tokenFields.join(" ")}`)
+        .lean();
+
+    const result = {};
+    for (const field of tokenFields) {
+        result[field] = tokenMetadataState(doc?.[field] || {});
+    }
+    return result;
+}
+
 function checkTokenCryptoReasons(token, now) {
     const reasons = [];
     const accessToken = token.encryptedAccessToken ? decryptToken(token.encryptedAccessToken) : null;
@@ -850,10 +905,28 @@ function tokenRecoveryReasons(token = {}, now = Date.now(), requiredScopes = REQ
     return [...new Set(reasons)];
 }
 
+function legacyValueFilter() {
+    return {
+        $exists: true,
+        $type: "string",
+        $ne: "",
+        $not: /^v3:gcm:/
+    };
+}
+
+function modelLegacyFilter(fields, afterId = null) {
+    const filter = { $or: fields.map(field => ({ [field]: legacyValueFilter() })) };
+    if (afterId) filter._id = { $gt: afterId };
+    return filter;
+}
+
 async function migrateStoredTokenEncryption({
     dryRun = false,
-    limit = 200,
-    model = OAuthUser
+    scanMax = 200,
+    limit = scanMax,
+    countRemaining = true,
+    model = OAuthUser,
+    afterId = null
 } = {}) {
     const targetFields = [
         "oauth.encryptedAccessToken",
@@ -862,57 +935,99 @@ async function migrateStoredTokenEncryption({
         "adminOAuth.encryptedRefreshToken"
     ];
 
-    const filter = {
-        $or: targetFields.map(field => ({
-            [field]: {
-                $exists: true,
-                $type: "string",
-                $ne: "",
-                $not: /^v3:gcm:/
-            }
-        }))
-    };
+    let queryFilter = modelLegacyFilter(targetFields, afterId);
+    let query = model.find(queryFilter);
+    if (typeof query.select === "function") {
+        query = query.select(["_id", ...targetFields].join(" "));
+    }
+    if (typeof query.sort === "function") query = query.sort({ _id: 1 });
+    if (typeof query.limit === "function") query = query.limit(limit);
+    if (typeof query.lean === "function") query = query.lean();
 
-    const docs = await model.find(filter).limit(limit);
-    const summary = {
-        scanned: docs.length,
-        updated: 0,
-        errors: 0
-    };
+    let docs = await query;
+    let cursorWrapped = false;
+
+    if (docs.length === 0 && afterId) {
+        cursorWrapped = true;
+        queryFilter = modelLegacyFilter(targetFields);
+        let retryQuery = model.find(queryFilter);
+        if (typeof retryQuery.select === "function") {
+            retryQuery = retryQuery.select(["_id", ...targetFields].join(" "));
+        }
+        if (typeof retryQuery.sort === "function") retryQuery = retryQuery.sort({ _id: 1 });
+        if (typeof retryQuery.limit === "function") retryQuery = retryQuery.limit(limit);
+        if (typeof retryQuery.lean === "function") retryQuery = retryQuery.lean();
+        docs = await retryQuery;
+    }
+
+    let eligibleFields = 0;
+    let migratedFields = 0;
+    let failedFields = 0;
 
     for (const doc of docs) {
-        const set = {};
-        let modified = false;
-
         for (const field of targetFields) {
             const parts = field.split(".");
             const currentVal = doc[parts[0]]?.[parts[1]];
-            if (typeof currentVal === "string" && currentVal.length > 0 && !currentVal.startsWith("v3:gcm:")) {
-                try {
-                    const decrypted = decryptTokenForMigration(currentVal);
-                    if (decrypted) {
-                        set[field] = encryptToken(decrypted);
-                        modified = true;
-                    }
-                } catch {
-                    summary.errors++;
-                }
+            if (typeof currentVal !== "string" || currentVal.length === 0 || currentVal.startsWith("v3:gcm:")) {
+                continue;
             }
-        }
 
-        if (modified && !dryRun) {
+            eligibleFields++;
+            let decrypted;
             try {
-                await model.updateOne({ _id: doc._id }, { $set: set });
-                summary.updated++;
+                decrypted = decryptTokenForMigration(currentVal);
             } catch {
-                summary.errors++;
+                failedFields++;
+                continue;
             }
-        } else if (modified && dryRun) {
-            summary.updated++;
+
+            if (!decrypted?.plaintext || decrypted.needsMigration !== true) {
+                failedFields++;
+                continue;
+            }
+
+            if (dryRun) {
+                continue;
+            }
+
+            try {
+                const replacement = encryptToken(decrypted.plaintext);
+                const result = await model.updateOne(
+                    { _id: doc._id, [field]: currentVal },
+                    { $set: { [field]: replacement } }
+                );
+                const modified = Number(result?.modifiedCount ?? result?.nModified ?? 0);
+                if (modified === 1) {
+                    migratedFields++;
+                } else {
+                    failedFields++;
+                }
+            } catch {
+                failedFields++;
+            }
         }
     }
 
-    return summary;
+    let remainingDocuments = null;
+    if (countRemaining && typeof model.countDocuments === "function") {
+        remainingDocuments = await model.countDocuments(modelLegacyFilter(targetFields));
+    }
+
+    const nextCursor = docs.length > 0 ? (docs.at(-1)?._id || null) : null;
+
+    return {
+        name: "oauth_tokens",
+        scannedDocuments: docs.length,
+        eligibleFields,
+        migratedFields,
+        failedFields,
+        remainingDocuments,
+        cursorWrapped,
+        nextCursor,
+        scanned: docs.length,
+        updated: migratedFields,
+        errors: failedFields
+    };
 }
 
 async function revokeToken({
@@ -951,13 +1066,31 @@ async function revokeToken({
         }
     }
 
-    doc[tokenField] = doc[tokenField] || {};
-    doc[tokenField].revokedAt = now;
-    doc.updatedAt = now;
-    await doc.save();
+    const previousVersion = Number(tokenState.version || 0);
+    const result = await model.updateOne(
+        {
+            _id: doc._id,
+            ...versionCondition(tokenField, previousVersion)
+        },
+        {
+            $set: {
+                [tokenPath(tokenField, "revokedAt")]: now,
+                updatedAt: now
+            },
+            $inc: {
+                [tokenPath(tokenField, "version")]: 1
+            }
+        }
+    );
 
     diagnosticStats.revokedCount++;
-    return { ok: true, revoked: true, userId, tokenField };
+    return {
+        ok: true,
+        revoked: true,
+        userId,
+        tokenField,
+        updated: Number(result?.modifiedCount ?? result?.nModified ?? 0) === 1
+    };
 }
 
 function getDiagnostics() {
@@ -1085,12 +1218,10 @@ module.exports = {
     refreshDueTokens,
     listAccessTokenCandidates,
     getOwnerTokenState,
+    getOwnerTokenMetadata,
     getRecoveryStatuses,
     recoveryReasonLabel,
     tokenRecoveryReasons,
-    encryptToken,
-    decryptToken,
-    decryptTokenForMigration,
     migrateStoredTokenEncryption,
     revokeToken,
     start,
@@ -1109,9 +1240,13 @@ module.exports = {
         applyRefreshOutcome,
         refreshTokenField,
         revealTokenStateForOwner,
+        tokenMetadataState,
         checkTokenCryptoReasons,
         collectMissingScopeReasons,
         resetInternalStateForTesting,
-        refreshLocks
+        refreshLocks,
+        encryptToken,
+        decryptToken,
+        decryptTokenForMigration
     }
 };

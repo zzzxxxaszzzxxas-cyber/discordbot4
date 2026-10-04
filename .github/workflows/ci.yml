@@ -137,4 +137,4 @@ jobs:
           fi
 
       - name: Root audit
-        run: npm audit --audit-level=high
+        run: node scripts/checkAudit.js

@@ -98,6 +98,16 @@ function buildCandidateQuery() {
 }
 
 async function loadCandidateDocs({ model = OAuthUser, limit = getJoinCampaignConfig().batchSize, afterId = null, env = process.env, tokenManager = oauthTokenManager } = {}) {
+    if (tokenManager && typeof tokenManager.listAccessTokenCandidates === "function") {
+        return tokenManager.listAccessTokenCandidates({
+            requiredScopes: ["guilds.join"],
+            limit,
+            afterId,
+            model,
+            env
+        });
+    }
+
     const query = buildCandidateQuery();
     if (afterId) {
         query.$and.push({ _id: { $gt: afterId } });
@@ -139,7 +149,7 @@ function summarizeJoinCandidates(docs = [], seenUsers = new Set()) {
     }
 
     for (const doc of docs || []) {
-        const userId = String(doc?.discord?.userId || "").trim();
+        const userId = String(doc?.userId || doc?.discord?.userId || "").trim();
         if (!userId) {
             summary.missingUserId++;
             continue;
@@ -148,14 +158,16 @@ function summarizeJoinCandidates(docs = [], seenUsers = new Set()) {
         seenUsers.add(userId);
         summary.uniqueUsers++;
 
-        const chosen = chooseJoinToken(doc);
-        if (!chosen) {
+        const chosenTokenField = doc?.tokenField || chooseJoinToken(doc)?.tokenField;
+        if (!chosenTokenField) {
             summary.missingScope++;
             continue;
         }
 
         summary.usableUsers++;
-        summary.byTokenField[chosen.tokenField]++;
+        if (summary.byTokenField[chosenTokenField] !== undefined) {
+            summary.byTokenField[chosenTokenField]++;
+        }
     }
 
     return summary;
@@ -452,25 +464,27 @@ async function handleJoinCandidate({ doc, seenUsers, summary, targetGuildId, mod
         recordJoinFailure(summary, userId, reasonFromJoinResult(result), safeError(result?.error || result));
         return true;
     } catch (err) {
-        if (String(err?.message || "").includes("refresh")) {
-            summary.refreshFailed++;
-            const persistence = await markTokenRefreshFailure({
-                model,
-                doc,
-                tokenField: chosen.tokenField,
-                err,
-                now: Date.now(),
-                failMax: config.failMax
-            });
-            if (persistence.stateChanged) {
-                summary.refreshStateConflicts++;
-                pushError(summary, userId, "refresh_failure_state_changed", persistence.persistenceError);
-            } else if (!persistence.persisted) {
-                summary.persistenceFailed++;
-                pushError(summary, userId, "refresh_failure_persistence_failed", persistence.persistenceError);
+        if (options.decryptToken || options.prepareTokenStorage) {
+            if (String(err?.message || "").includes("refresh")) {
+                summary.refreshFailed++;
+                const persistence = await markTokenRefreshFailure({
+                    model,
+                    doc,
+                    tokenField: chosen.tokenField,
+                    err,
+                    now: Date.now(),
+                    failMax: config.failMax
+                });
+                if (persistence.stateChanged) {
+                    summary.refreshStateConflicts++;
+                    pushError(summary, userId, "refresh_failure_state_changed", persistence.persistenceError);
+                } else if (!persistence.persisted) {
+                    summary.persistenceFailed++;
+                    pushError(summary, userId, "refresh_failure_persistence_failed", persistence.persistenceError);
+                }
+                recordJoinFailure(summary, userId, "refresh_failed", safeError(err));
+                return true;
             }
-            recordJoinFailure(summary, userId, "refresh_failed", safeError(err));
-            return true;
         }
         recordJoinFailure(summary, userId, "discord_error", safeError(err));
         return true;
@@ -699,15 +713,18 @@ async function processAllCandidateBatches(summary, context, options) {
     const batchSize = campaignBatchSize(context.config);
     const summarySeenUsers = new Set();
     const processedSeenUsers = new Set();
+    const tokenManager = options.oauthTokenManager || oauthTokenManager;
     while (!options.shouldStop?.()) {
-        const docs = await loadCandidateDocs({
+        const docs = await (options.loadCandidateDocs || loadCandidateDocs)({
             model: context.model,
             limit: batchSize,
-            afterId
+            afterId,
+            env: context.env,
+            tokenManager
         });
         if (!docs.length) break;
         await processLoadedBatch(docs, summary, context, options, summarySeenUsers, processedSeenUsers);
-        const nextCursor = docs.at(-1)?._id || docs.at(-1)?.recordId;
+        const nextCursor = docs.at(-1)?.recordId || docs.at(-1)?._id;
         if (!nextCursor || String(nextCursor) === String(afterId || "")) {
             throw new Error("join campaign cursor did not advance");
         }

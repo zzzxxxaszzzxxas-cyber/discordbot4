@@ -14,13 +14,6 @@ const DEFAULT_SCAN_MAX = readFiniteInteger(process.env.ENCRYPTION_MIGRATION_SCAN
 const CURRENT_PREFIX = "v3:gcm:";
 const migrationCursors = new Map();
 
-const TOKEN_FIELDS = Object.freeze([
-    "oauth.encryptedAccessToken",
-    "oauth.encryptedRefreshToken",
-    "adminOAuth.encryptedAccessToken",
-    "adminOAuth.encryptedRefreshToken"
-]);
-
 function legacyValueFilter() {
     return {
         $exists: true,
@@ -40,13 +33,6 @@ function resetMigrationCursors() {
 
 function migrationSpecs(models) {
     return [
-        {
-            name: "oauth_tokens",
-            model: models.OAuthUserModel,
-            fields: TOKEN_FIELDS,
-            decrypt: oauthTokenManager.decryptTokenForMigration,
-            encrypt: oauthTokenManager.encryptToken
-        },
         {
             name: "verify_log_ips",
             model: models.VerifyLogModel,
@@ -169,7 +155,20 @@ async function runEncryptionMigration(options = {}) {
         countRemaining: options.countRemaining !== false
     };
 
-    const collections = [];
+    const oauthSummary = await oauthTokenManager.migrateStoredTokenEncryption({
+        dryRun: settings.dryRun,
+        scanMax: settings.scanMax,
+        countRemaining: settings.countRemaining,
+        model: models.OAuthUserModel,
+        afterId: migrationCursors.get("oauth_tokens") || null
+    });
+    if (!settings.dryRun && oauthSummary.nextCursor) {
+        migrationCursors.set("oauth_tokens", oauthSummary.nextCursor);
+    } else if (!settings.dryRun && oauthSummary.cursorWrapped) {
+        migrationCursors.delete("oauth_tokens");
+    }
+
+    const collections = [oauthSummary];
     for (const spec of migrationSpecs(models)) {
         collections.push(await migrateSpec(spec, settings));
     }

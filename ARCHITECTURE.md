@@ -425,12 +425,16 @@ The system does not claim to discover a residential IP behind VPN/TOR.
 
 `discord/core/oauthTokenManager.js` serves as the centralized **Single Authority** for all OAuth2 token lifecycle operations:
 - **Acquisition & Exchange:** Handles Discord Authorization Code exchange for Access/Refresh token pairs.
+- **Atomic Activation:** Executes `commitVerificationActivation()` for atomic `OAuthUser` record updates with payload validation and compensating snapshot rollback.
 - **Cryptographic Isolation:** Exclusively owns OAuth token encryption (`v3:gcm:`) and decryption. Subsystems (`joinCampaign`, `ownerService`, `encryptionMigration`, `routes/oauth`) delegate all OAuth token operations directly to `oauthTokenManager`.
-- **On-Demand Retrieval & Automatic Refresh:** Provides `getAccessToken()` with transparent near-expiry refresh and per-user/field refresh deduplication locks (`withTokenRefreshLock`).
+- **On-Demand Retrieval & Automatic Refresh:** Provides `getAccessToken()` with transparent near-expiry refresh and per-user/field refresh deduplication locks (`withTokenRefreshLock`). Excludes soft-deleted users.
+- **Candidate Selection:** Provides `listAccessTokenCandidates()` streaming usable candidates (`guilds.join`, preferred `oauth` over `adminOAuth`, unrevoked, unexhausted, non-deleted).
 - **Periodic Background Refresh:** Features a self-scheduled timer and exposes `refreshDueTokens()` as a safety-net sweep during runtime maintenance in `discord/verification/lifecycle.js`.
 - **Health & Recovery Evaluation:** Evaluates token integrity, expired states, decrypt failures, and missing scopes via `getRecoveryStatuses()` and `tokenRecoveryReasons()`.
+- **Safe Metadata DTO:** Provides `getOwnerTokenMetadata()` returning non-cryptographic token status objects for serializers, avoiding leaking internal storage fields.
 - **Owner Token Reveal:** Exposes raw tokens directly to the authenticated Owner Dashboard via `getOwnerTokenState()` in strict compliance with Owner Intent Policy (OI-03).
-- **Token Revocation:** Provides `revokeToken()` to mark token revocation in MongoDB and revoke authorizations via Discord API.
+- **Atomic Token Revocation:** Provides `revokeToken()` to atomically set `revokedAt`, increment token version, and revoke authorizations via Discord API, preventing concurrent in-flight refresh overwrites.
+- **Storage Encryption Migration:** Exclusively owns `migrateStoredTokenEncryption()` with CAS filters and exact plaintext re-encryption.
 
 > **Strict Scope Boundary:** `oauthTokenManager.js` manages Discord OAuth2 user authorization tokens exclusively. Voice sessions, Quest runner tokens, and bot gateway tokens remain strictly coordinated by `discord/core/tokenCoordinator.js` and are completely isolated from OAuth tokens.
 

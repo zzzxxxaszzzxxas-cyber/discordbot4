@@ -329,10 +329,12 @@ async function startVerificationRuntime(options = {}) {
     runtimeStartPromise = (async () => {
         await maintenanceRunner();
         if (typeof tokenManager.start === "function") {
-            tokenManager.start().catch(err => {
+            try {
+                await tokenManager.start();
+            } catch (err) {
                 lastError = safeError(err);
                 console.error("[VERIFICATION] token manager startup failed:", lastError);
-            });
+            }
         }
         if (!maintenanceTimer) {
             maintenanceTimer = createInterval(() => maintenanceRunner().catch(err => {

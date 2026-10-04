@@ -247,8 +247,6 @@ async function getMemberDetail(guildId, userId, { canViewSensitive = false } = {
                 lastIpTracking: 1,
                 snapshotMeta: 1,
                 snapshotRefs: 1,
-                oauth: 1,
-                adminOAuth: 1,
                 createdAt: 1,
                 updatedAt: 1
             })
@@ -260,6 +258,10 @@ async function getMemberDetail(guildId, userId, { canViewSensitive = false } = {
     ]);
 
     if (!oauthUser && !latestLog) throw memberNotFoundError();
+
+    const tokenStatuses = canViewSensitive
+        ? await oauthTokenManager.getOwnerTokenMetadata(safeUserId)
+        : null;
 
     let hydratedOAuthUser = oauthUser;
     const snapshotRefs = {
@@ -288,7 +290,8 @@ async function getMemberDetail(guildId, userId, { canViewSensitive = false } = {
         userId: safeUserId,
         oauthUser: hydratedOAuthUser,
         latestLog,
-        canViewSensitive
+        canViewSensitive,
+        tokenStatuses
       }),
       history: historyLogs.map(safeRecent),
       historyTruncated: historyLogs.length >= 100
@@ -315,17 +318,20 @@ async function getOAuthRecoveryCenter(guildId) {
         ])
     ]);
     const userIds = recipients.map(item => String(item._id || "")).filter(Boolean);
-    const oauthUsers = userIds.length ? await OAuthUser.find({ "discord.userId": { $in: userIds } })
-        .select("discord.userId discord.username discord.globalName discord.displayTag discord.avatarUrl oauth")
-        .lean() : [];
-    const oauthMap = new Map(oauthUsers.map(item => [String(item.discord?.userId || ""), item]));
+    const [recoveryMap, oauthUsers] = await Promise.all([
+        oauthTokenManager.getRecoveryStatuses(userIds),
+        userIds.length ? OAuthUser.find({ "discord.userId": { $in: userIds } })
+            .select("discord.userId discord.username discord.globalName discord.displayTag discord.avatarUrl")
+            .lean() : []
+    ]);
+    const userMap = new Map(oauthUsers.map(item => [String(item.discord?.userId || ""), item]));
     const defaultRoleId = config?.verification?.roleId || null;
     const members = [];
     for (const recipient of recipients) {
         const userId = String(recipient._id || "");
-        const oauthUser = oauthMap.get(userId);
-        const reasons = tokenRecoveryReasons(oauthUser?.oauth || {});
-        if (!reasons.length) continue;
+        const recovery = recoveryMap.get(userId);
+        if (!recovery || !recovery.reasons || !recovery.reasons.length) continue;
+        const oauthUser = userMap.get(userId);
         members.push({
             userId,
             username: oauthUser?.discord?.username || null,
@@ -334,8 +340,8 @@ async function getOAuthRecoveryCenter(guildId) {
             avatarUrl: oauthUser?.discord?.avatarUrl || null,
             roleId: recipient.roleId || defaultRoleId,
             lastVerifiedAt: recipient.verifiedAt || null,
-            reasons,
-            reasonLabels: reasons.map(recoveryReasonLabel)
+            reasons: recovery.reasons,
+            reasonLabels: recovery.reasonLabels
         });
     }
     return {

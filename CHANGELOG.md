@@ -4,13 +4,14 @@
 
 - **OAuth Token Lifecycle Consolidation (`discord/core/oauthTokenManager.js`):**
   - Consolidated all fragmented OAuth2 token operations across verification, campaigns, and recovery into a Single Authority: `discord/core/oauthTokenManager.js`.
-  - Replaced legacy `oauthTokenLifecycle.js` with comprehensive token manager managing: authorization code exchange, atomic MongoDB activation storage, AES-256-GCM (`v3:gcm:`) encryption/decryption, transparent near-expiry refresh with per-user deduplication locks (`withTokenRefreshLock`), candidate selection, background refresh sweeps, recovery evaluation, and token revocation.
-  - Refactored `discord/verification/routes/oauth.js` to perform single atomic `commitVerificationActivation` executing snapshot updates and token storage in one atomic MongoDB write.
-  - Refactored `discord/features/joinCampaign.js` to utilize `getUsableAccessToken` and candidate streaming without direct token crypto exposure.
-  - Refactored `discord/verification/ownerService.js` to retrieve raw token states via `oauthTokenManager.getOwnerTokenState()` in strict compliance with Owner Intent Policy (OI-03), eliminating direct token decryption from `ownerService.js`.
-  - Refactored `discord/verification/services/encryptionMigration.js` to route `oauth_tokens` crypto operations exclusively through `oauthTokenManager`.
-  - Integrated `oauthTokenManager` into `discord/verification/lifecycle.js` with background timers and safety-net maintenance sweeps.
+  - Replaced legacy `oauthTokenLifecycle.js` with comprehensive token manager managing: authorization code exchange, atomic OAuthUser activation commit plus compensating snapshot rollback, AES-256-GCM (`v3:gcm:`) encryption/decryption, transparent near-expiry refresh with per-user deduplication locks (`withTokenRefreshLock`), candidate selection (`listAccessTokenCandidates`), background refresh sweeps, recovery evaluation (`getRecoveryStatuses`), safe token metadata status DTOs (`getOwnerTokenMetadata`), and token revocation (`revokeToken`).
+  - Refactored `discord/verification/routes/oauth.js` to execute `commitVerificationActivation` with payload validation and compensating snapshot rollback.
+  - Refactored `discord/features/joinCampaign.js` to fully consume `listAccessTokenCandidates()` and `getAccessToken()` from `oauthTokenManager`, eliminating duplicate token queries, decryption, and manual refresh failure persistence.
+  - Refactored `discord/verification/ownerService.js` to use `oauthTokenManager.getRecoveryStatuses()` for recovery and `oauthTokenManager.getOwnerTokenMetadata()` for member detail, completely eliminating direct selection of `oauth/adminOAuth` subdocuments, while preserving full raw token visibility for Owner Detail via `oauthTokenManager.getOwnerTokenState()` in strict compliance with Owner Intent Policy (OI-03).
+  - Refactored `discord/verification/services/encryptionMigration.js` to delegate `oauth_tokens` migration entirely to `oauthTokenManager.migrateStoredTokenEncryption()`, resolving plaintext re-encryption and adding CAS update filters.
+  - Integrated `oauthTokenManager` into `discord/verification/lifecycle.js` with awaited startup, background timers, and safety-net maintenance sweeps.
   - Retired and deleted `discord/verification/utils/oauthTokenLifecycle.js`.
+  - Added dedicated security audit gate script `scripts/checkAudit.js` enforcing 0 vulnerabilities on production dependencies (`npm audit --omit=dev --audit-level=high`) and strictly scoped dev-only scanner exception for `@sonar/scan -> node-forge` (`GHSA-86w9-cpqp-85rv`).
   - Updated coverage thresholds in `scripts/checkCoverageThresholds.js` tracking `oauthTokenManager.js` (>85% line coverage achieved).
   - Maintained strict isolation for Voice and Quest subsystems (`discord/core/tokenCoordinator.js` untouched).
 
