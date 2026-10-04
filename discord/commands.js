@@ -7,6 +7,7 @@
 
 const config = require("./config.json");
 const sessionManager = require("./sessionManager");
+const webhooks = require("./core/webhooks");
 
 const moderation   = require("./commands/moderation");
 const information  = require("./commands/information");
@@ -346,12 +347,33 @@ async function handleInteraction(interaction, client, shadowMasterId) {
         }
 
     } catch (err) {
-        console.error(`[SLASH] ❌ Error in /${interaction.commandName || "interaction"}:`, err.message);
+        const cmdName = interaction.commandName || interaction.customId || "interaction";
+        console.error(`[SLASH] ❌ Error in /${cmdName}:`, err.message);
         sessionManager.systemMetrics.increment("errors");
         if (interaction) {
             interaction.__commandFailed = true;
             interaction.__commandError = err.message || String(err);
         }
+
+        webhooks.sendWebhookEvent({
+            target: "ALERT",
+            severity: "ERROR",
+            category: "COMMAND",
+            code: "command.unhandled_error",
+            state: "OPEN",
+            title: "COMMAND EXECUTION ERROR",
+            description: `เกิดข้อผิดพลาดในการประมวลผลคำสั่ง /${cmdName}: ${err?.message || "unknown"}`,
+            impact: "ผู้ใช้ไม่สามารถใช้งานคำสั่งหรือปุ่มนี้ได้จนกว่าจะแก้ไข",
+            action: "ตรวจสอบข้อผิดพลาดและ stack trace ใน Runtime Log",
+            context: {
+                "คำสั่ง / ID": cmdName,
+                "ผู้ใช้งาน": interaction.user?.tag || interaction.user?.id || "unknown",
+                "เซิร์ฟเวอร์": interaction.guild?.name || interaction.guildId || "DM",
+                "รหัสข้อผิดพลาด": String(err?.code || err?.name || "command_error")
+            },
+            dedupeKey: `command-error:${cmdName}:${err?.message || ""}`,
+            dedupeMs: 2 * 60 * 1000
+        }).catch(() => {});
 
         const reply = {
             content: `> ${config.emojis.warning} เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง`,

@@ -942,6 +942,25 @@ async function startRunner({
         } else {
             addLog(`❌ ${username}: FATAL ERROR — ${err.message}`);
             persistSchedule({ lastError: err.message });
+            sendWebhookEvent({
+                target: 'ALERT',
+                severity: 'ERROR',
+                category: 'QUEST',
+                code: 'quest.runner_system_error',
+                state: 'OPEN',
+                title: 'QUEST RUNNER CRASH',
+                description: `เกิดข้อผิดพลาดร้ายแรงใน Quest Runner: ${err.message}`,
+                impact: `Quest Runner ของผู้ใช้ ${username} หยุดการทำงานกะทันหัน`,
+                action: 'ตรวจสอบข้อผิดพลาดและ stack trace ในระบบ Quest',
+                context: {
+                    'บัญชี': `${username} (${accountId})`,
+                    'ผู้สั่งการ': ownerId,
+                    'โหมด': mode,
+                    'รหัสข้อผิดพลาด': String(err?.code || err?.name || 'runner_error')
+                },
+                dedupeKey: `quest-runner-error:${accountId}:${err.message}`,
+                dedupeMs: 5 * 60 * 1000
+            }).catch(() => {});
         }
         await flush();
     }

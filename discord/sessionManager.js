@@ -838,6 +838,23 @@ async function createSession(token, serverId, voiceId, serverName, ownerId, owne
     const activeSessionCount = Array.from(sessions.values()).filter(isSessionRunnable).length;
     if (activeSessionCount >= configuredMaxSessions) {
         console.log(`[SESSION] ⛔ System limit reached for owner=${sanitizeLogText(ownerId || "unknown")}`);
+        webhooks.sendWebhookEvent({
+            target: "ALERT",
+            severity: "WARNING",
+            category: "VOICE",
+            code: "voice.capacity_reached",
+            state: "OPEN",
+            title: "VOICE CAPACITY REACHED",
+            description: `ระบบเปิดเซสชันเสียงเต็มขีดจำกัดแล้ว (${activeSessionCount}/${configuredMaxSessions} เซสชัน)`,
+            impact: "ผู้ใช้ไม่สามารถเพิ่มเซสชันเสียงใหม่ได้จนกว่าจะมีเซสชันเดิมถูกลบหรือหยุดทำงาน",
+            action: "ตรวจสอบจำนวนเซสชันในระบบ หรือพิจารณาปรับเพิ่ม maxSessions ในการตั้งค่า",
+            context: {
+                "จำนวนเซสชันปัจจุบัน": `${activeSessionCount}/${configuredMaxSessions}`,
+                "ผู้ขอดำเนินการ": sanitizeLogText(ownerId || "unknown")
+            },
+            dedupeKey: "voice-capacity-reached",
+            dedupeMs: 5 * 60 * 1000
+        }).catch(() => {});
         throw new Error("SYSTEM_LIMIT");
     }
 

@@ -6,7 +6,8 @@ const webhooks = require("./webhooks");
 const attachedClients = new WeakSet();
 
 function safeLabel(value, fallback) {
-    const clean = sanitizeLogText(String(value || fallback || "unknown")).trim();
+    const raw = value !== undefined && value !== null && value !== "" ? value : fallback;
+    const clean = sanitizeLogText(String(raw !== undefined && raw !== null ? raw : "unknown")).trim();
     return clean.slice(0, 120) || "unknown";
 }
 
@@ -116,16 +117,17 @@ function registerGatewayDiagnostics(client, options = {}) {
         const replayed = Number.isFinite(Number(replayedEvents)) ? Number(replayedEvents) : 0;
         console.log(`${prefix} event=shardResume shard=${sId} replayed=${replayed}`);
         webhooks.sendWebhookEvent({
-            target: "LOG",
+            target: "ALERT",
             severity: "SUCCESS",
             category: "GATEWAY",
             code: "gateway.shard_resumed",
-            title: "SHARD RESUMED",
-            description: `Shard ${sId} เชื่อมต่อกลับมาสำเร็จแล้ว`,
+            state: "RESOLVED",
+            title: "GATEWAY RECONNECTED (RESOLVED)",
+            description: `Shard ${sId} เชื่อมต่อกลับมาสำเร็จแล้วและพร้อมทำงานตามปกติ`,
             fields: [
-                { name: "ผู้ดำเนินการ", value: "Discord Gateway" },
-                { name: "เป้าหมาย", value: `Shard ${sId} (${clientName})` },
-                { name: "การกระทำ", value: "shard resume" },
+                { name: "สถานะ", value: "แก้ไขแล้ว" },
+                { name: "Client", value: clientName },
+                { name: "Shard ID", value: sId },
                 { name: "ผลลัพธ์", value: `สำเร็จ (เล่นเหตุการณ์ย้อนหลัง ${replayed} รายการ)` }
             ],
             dedupeKey: `gateway-shard-resume:${clientName}:${sId}`,

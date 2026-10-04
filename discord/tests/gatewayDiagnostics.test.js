@@ -62,8 +62,10 @@ test("gateway diagnostics attach once and handle websocket lifecycle errors loca
         assert.equal(dispatched[2].code, "gateway.shard_disconnected");
         assert.equal(dispatched[3].target, "LOG"); // shardReconnecting -> LOG
         assert.equal(dispatched[3].code, "gateway.shard_reconnecting");
-        assert.equal(dispatched[4].target, "LOG"); // shardResume -> LOG
+        assert.equal(dispatched[4].target, "ALERT"); // shardResume -> ALERT (RESOLVED)
         assert.equal(dispatched[4].code, "gateway.shard_resumed");
+        assert.equal(dispatched[4].state, "RESOLVED");
+        assert.equal(dispatched[4].severity, "SUCCESS");
     } finally {
         console.error = originalError;
         console.warn = originalWarn;

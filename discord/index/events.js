@@ -558,6 +558,23 @@ async function handleMessageCreateEvent({ message, commands, sessionManager, spa
         });
     } catch (error) {
         console.error(`[PROTECTION] Top-level message pipeline failed safely: ${error?.message || error}`);
+        sendWebhookEvent({
+            target: "ALERT",
+            severity: "ERROR",
+            category: "SECURITY",
+            code: "protection.pipeline_error",
+            state: "OPEN",
+            title: "PROTECTION PIPELINE ERROR",
+            description: `ระบบตรวจจับความปลอดภัยพบข้อผิดพลาด: ${error?.message || "unknown"}`,
+            impact: "การตรวจสอบความปลอดภัย Anti-Spam / Anti-Raid อาจข้ามข้อความนี้",
+            action: "ตรวจสอบข้อผิดพลาดและข้อมูลข้อความในระบบความปลอดภัย",
+            context: {
+                "Channel": message.channel?.name || message.channelId,
+                "Guild": message.guild?.name || message.guildId
+            },
+            dedupeKey: `protection-pipeline-err:${error?.message || ""}`,
+            dedupeMs: 5 * 60 * 1000
+        }).catch(() => {});
     }
 }
 
@@ -570,6 +587,24 @@ function isRoleButtonInteraction(interaction) {
 async function handleRoleButtonInteractionSafe(interaction) {
     return await roleButton.handleRoleInteraction(interaction).catch(async e => {
         console.error('[ROLE_BTN] ❌', e.message);
+        sendWebhookEvent({
+            target: "ALERT",
+            severity: "ERROR",
+            category: "COMMAND",
+            code: "role_button.error",
+            state: "OPEN",
+            title: "ROLE BUTTON ERROR",
+            description: `เกิดข้อผิดพลาดในการจัดการยศผ่านปุ่มหรือเมนู: ${e?.message || "unknown"}`,
+            impact: "สมาชิกอาจไม่ได้รับหรือถอดยศตามที่เลือก",
+            action: "ตรวจสอบสิทธิ์ Manage Roles ของบอท และลำดับ Role Hierarchy ในเซิร์ฟเวอร์",
+            context: {
+                "Custom ID": interaction.customId || "unknown",
+                "User": interaction.user?.tag || interaction.user?.id || "unknown",
+                "Guild": interaction.guild?.name || interaction.guildId || "DM"
+            },
+            dedupeKey: `role-btn-err:${interaction.customId}:${e?.message || ""}`,
+            dedupeMs: 2 * 60 * 1000
+        }).catch(() => {});
         const r = { content: `> ${appConfig.emojis?.error || '❌'} เกิดข้อผิดพลาดในการจัดการยศ กรุณาลองใหม่อีกครั้ง`, ephemeral: true };
         if (interaction.deferred) return interaction.editReply(r);
         if (!interaction.replied) return interaction.reply(r);
@@ -620,6 +655,24 @@ async function dispatchCommandInteraction({ interaction, commands, client, SHADO
         status = "failed";
         errorDetail = e?.message || String(e);
         console.error('[EVENT] ❌ handleInteraction error:', e.message);
+        sendWebhookEvent({
+            target: "ALERT",
+            severity: "ERROR",
+            category: "COMMAND",
+            code: "interaction.unhandled_error",
+            state: "OPEN",
+            title: "INTERACTION UNHANDLED ERROR",
+            description: `เกิดข้อผิดพลาดที่ไม่ได้ดักจับใน Interaction Dispatch: ${e?.message || "unknown"}`,
+            impact: "Interaction ล้มเหลวและไม่สามารถทำงานต่อได้",
+            action: "ตรวจสอบ Runtime Log และข้อผิดพลาดในคำสั่ง",
+            context: {
+                "Command / ID": interaction.commandName || interaction.customId || "unknown",
+                "User": interaction.user?.tag || interaction.user?.id || "unknown",
+                "Guild": interaction.guild?.name || interaction.guildId || "DM"
+            },
+            dedupeKey: `interaction-dispatch-err:${interaction.commandName || interaction.customId}:${e?.message || ""}`,
+            dedupeMs: 2 * 60 * 1000
+        }).catch(() => {});
         await replyInteractionError(interaction);
     } finally {
         finalizeCommandInteraction({ commandKey, commandInFlight, commandCooldownContext, interaction });
