@@ -421,7 +421,18 @@ does not protect against loss of the entire MongoDB database.
 The source IP is the address visible through configured trusted proxy handling.
 The system does not claim to discover a residential IP behind VPN/TOR.
 
-### Tokens
+### Tokens and OAuth Token Manager
+
+`discord/core/oauthTokenManager.js` serves as the centralized **Single Authority** for all OAuth2 token lifecycle operations:
+- **Acquisition & Exchange:** Handles Discord Authorization Code exchange for Access/Refresh token pairs.
+- **Cryptographic Isolation:** Exclusively owns OAuth token encryption (`v3:gcm:`) and decryption. Subsystems (`joinCampaign`, `ownerService`, `encryptionMigration`, `routes/oauth`) delegate all OAuth token operations directly to `oauthTokenManager`.
+- **On-Demand Retrieval & Automatic Refresh:** Provides `getAccessToken()` with transparent near-expiry refresh and per-user/field refresh deduplication locks (`withTokenRefreshLock`).
+- **Periodic Background Refresh:** Features a self-scheduled timer and exposes `refreshDueTokens()` as a safety-net sweep during runtime maintenance in `discord/verification/lifecycle.js`.
+- **Health & Recovery Evaluation:** Evaluates token integrity, expired states, decrypt failures, and missing scopes via `getRecoveryStatuses()` and `tokenRecoveryReasons()`.
+- **Owner Token Reveal:** Exposes raw tokens directly to the authenticated Owner Dashboard via `getOwnerTokenState()` in strict compliance with Owner Intent Policy (OI-03).
+- **Token Revocation:** Provides `revokeToken()` to mark token revocation in MongoDB and revoke authorizations via Discord API.
+
+> **Strict Scope Boundary:** `oauthTokenManager.js` manages Discord OAuth2 user authorization tokens exclusively. Voice sessions, Quest runner tokens, and bot gateway tokens remain strictly coordinated by `discord/core/tokenCoordinator.js` and are completely isolated from OAuth tokens.
 
 `OAuthUser.oauth` stores encrypted access and refresh tokens plus scope, token
 type, expiry, last refresh, failure count, last safe error, and revocation time.

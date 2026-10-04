@@ -1,0 +1,1117 @@
+"use strict";
+
+const OAuthUser = require("../verification/models/OAuthUser");
+const discordApi = require("../verification/utils/discordAPI");
+const {
+    encryptToken,
+    decryptToken,
+    decryptTokenForMigration
+} = require("../verification/utils/crypto");
+const { safeError } = require("./safeLogger");
+const { resolvePublicBaseUrl } = require("./publicUrl");
+
+const DEFAULT_REFRESH_MARGIN_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_REFRESH_SCAN_LIMIT = 100;
+const DEFAULT_REFRESH_FAIL_MAX = 5;
+const DEFAULT_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const DEFAULT_ON_DEMAND_MARGIN_MS = 5 * 60 * 1000;
+
+const REQUIRED_USER_SCOPES = Object.freeze([
+    "identify", "email", "connections", "guilds", "guilds.members.read", "guilds.join"
+]);
+const TOKEN_FIELDS = Object.freeze(["oauth", "adminOAuth"]);
+
+const refreshLocks = new Map();
+
+let backgroundTimer = null;
+let backgroundIntervalMs = DEFAULT_REFRESH_INTERVAL_MS;
+let isStarted = false;
+let startPromise = null;
+let refreshInFlight = false;
+let inFlightRefreshPromise = null;
+
+const diagnosticStats = {
+    startedAt: null,
+    stoppedAt: null,
+    totalRefreshes: 0,
+    successfulRefreshes: 0,
+    failedRefreshes: 0,
+    revokedCount: 0,
+    conflictCount: 0,
+    lastRefreshAt: null,
+    lastRefreshSummary: null,
+    lastError: null
+};
+
+function readPositiveNumber(value, fallback, min = 1) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < min) return fallback;
+    return parsed;
+}
+
+function getPublicBaseUrl(env = process.env) {
+    return resolvePublicBaseUrl(env, "http://localhost:3000");
+}
+
+function getVerificationRedirectUri(env = process.env) {
+    return `${getPublicBaseUrl(env)}/auth/callback`;
+}
+
+function getAdminRedirectUri(env = process.env) {
+    return String(
+        env.LEGACY_ADMIN_OAUTH_REDIRECT_URI ||
+        `${getPublicBaseUrl(env)}/auth/admin-callback`
+    ).trim();
+}
+
+function getOAuthRefreshConfig(env = process.env) {
+    return {
+        enabled: true,
+        marginMs: readPositiveNumber(env.OAUTH_TOKEN_REFRESH_MARGIN_MS, DEFAULT_REFRESH_MARGIN_MS, 60 * 1000),
+        scanLimit: Math.max(1, Math.min(1000, readPositiveNumber(env.OAUTH_TOKEN_REFRESH_SCAN_LIMIT, DEFAULT_REFRESH_SCAN_LIMIT, 1))),
+        failMax: Math.max(1, Math.min(50, readPositiveNumber(env.OAUTH_TOKEN_REFRESH_FAIL_MAX, DEFAULT_REFRESH_FAIL_MAX, 1))),
+        intervalMs: readPositiveNumber(env.OAUTH_TOKEN_REFRESH_INTERVAL_MS, DEFAULT_REFRESH_INTERVAL_MS, 60 * 1000),
+        redirectUri: getVerificationRedirectUri(env),
+        verificationRedirectUri: getVerificationRedirectUri(env),
+        adminRedirectUri: getAdminRedirectUri(env)
+    };
+}
+
+function tokenPath(tokenField, key) {
+    return `${tokenField}.${key}`;
+}
+
+function versionCondition(tokenField, version) {
+    const previousVersion = Number(version || 0);
+    if (previousVersion > 0) return { [tokenPath(tokenField, "version")]: previousVersion };
+    return {
+        $or: [
+            { [tokenPath(tokenField, "version")]: 0 },
+            { [tokenPath(tokenField, "version")]: { $exists: false } }
+        ]
+    };
+}
+
+function validateTokenData(tokenData) {
+    if (!tokenData || typeof tokenData !== "object") {
+        const error = new Error("Invalid token payload: expected an object");
+        error.code = "oauth_token_invalid_payload";
+        throw error;
+    }
+    if (!tokenData.access_token || typeof tokenData.access_token !== "string") {
+        const error = new Error("Invalid token payload: missing or invalid access_token");
+        error.code = "oauth_token_missing_access_token";
+        throw error;
+    }
+    if (!tokenData.refresh_token || typeof tokenData.refresh_token !== "string") {
+        const error = new Error("Invalid token payload: missing or invalid refresh_token");
+        error.code = "oauth_token_missing_refresh_token";
+        throw error;
+    }
+    const expiresIn = Number(tokenData.expires_in);
+    if (!Number.isFinite(expiresIn) || expiresIn <= 0) {
+        const error = new Error("Invalid token payload: expires_in must be a positive number");
+        error.code = "oauth_token_invalid_expires_in";
+        throw error;
+    }
+    if (tokenData.scope !== undefined && typeof tokenData.scope !== "string") {
+        const error = new Error("Invalid token payload: scope must be a string");
+        error.code = "oauth_token_invalid_scope";
+        throw error;
+    }
+    return true;
+}
+
+function prepareStoredToken(tokenData = {}, { now = Date.now(), previousVersion = 0 } = {}) {
+    const rawAccess = String(tokenData?.access_token || "").trim();
+    const rawRefresh = String(tokenData?.refresh_token || "").trim();
+    const expiresIn = Number(tokenData?.expires_in || 0);
+
+    return {
+        encryptedAccessToken: rawAccess ? encryptToken(rawAccess) : "",
+        encryptedRefreshToken: rawRefresh ? encryptToken(rawRefresh) : "",
+        expiresAt: expiresIn > 0 ? now + (expiresIn * 1000) : null,
+        scope: String(tokenData?.scope || ""),
+        tokenType: String(tokenData?.token_type || "Bearer"),
+        lastRefreshAt: now,
+        refreshFailCount: 0,
+        lastRefreshError: null,
+        revokedAt: null,
+        version: Number(previousVersion || 0) + 1,
+        rawTokenMeta: {
+            expiresIn: expiresIn > 0 ? expiresIn : null,
+            receivedAt: now
+        }
+    };
+}
+
+async function exchangeAuthorizationCode(code, redirectUri, discord = discordApi) {
+    if (!code || typeof code !== "string") {
+        const error = new Error("Authorization code is required");
+        error.code = "oauth_code_required";
+        throw error;
+    }
+    return await discord.exchangeCode(code, redirectUri);
+}
+
+async function commitVerificationActivation({
+    profileUserId,
+    tokenData,
+    updateSet,
+    safeAttemptStartedAt,
+    existing,
+    storedSnapshots,
+    model = OAuthUser,
+    now = Date.now()
+}) {
+    if (!profileUserId) {
+        const error = new Error("User ID is required for activation");
+        error.code = "oauth_user_id_required";
+        throw error;
+    }
+
+    const previousVersion = Number(existing?.oauth?.version || 0);
+    const oauthPayload = prepareStoredToken(tokenData, { now, previousVersion });
+
+    const finalUpdateSet = {
+        ...updateSet,
+        oauth: oauthPayload
+    };
+
+    const activationFilter = {
+        "discord.userId": profileUserId,
+        $or: [
+            { "snapshotMeta.activation.attemptStartedAt": { $exists: false } },
+            { "snapshotMeta.activation.attemptStartedAt": { $lte: safeAttemptStartedAt } }
+        ]
+    };
+
+    const activated = await model.findOneAndUpdate(
+        activationFilter,
+        {
+            $set: finalUpdateSet,
+            $setOnInsert: { createdAt: now }
+        },
+        {
+            upsert: !existing,
+            returnDocument: "after"
+        }
+    );
+
+    if (!activated) {
+        const stale = new Error("A newer OAuth snapshot attempt is already active");
+        stale.code = "snapshot_activation_stale";
+        throw stale;
+    }
+
+    return { ok: true, activated };
+}
+
+async function withTokenRefreshLock(key, fn) {
+    const previous = refreshLocks.get(key) || Promise.resolve();
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const current = previous.catch(() => {}).then(() => gate);
+    refreshLocks.set(key, current);
+    await previous.catch(() => {});
+    try {
+        return await fn();
+    } finally {
+        release();
+        if (refreshLocks.get(key) === current) refreshLocks.delete(key);
+    }
+}
+
+function resolveRedirectUriForField(tokenField, env = process.env) {
+    return tokenField === "adminOAuth"
+        ? getAdminRedirectUri(env)
+        : getVerificationRedirectUri(env);
+}
+
+function conflictOutcome(tokenField, userId, reason = "state_changed") {
+    diagnosticStats.conflictCount++;
+    return {
+        ok: true,
+        skipped: true,
+        reason,
+        tokenField,
+        userId
+    };
+}
+
+async function readFreshOAuthDocument(model, docOrId, tokenField) {
+    if (!model || typeof model.findById !== "function") {
+        const error = new Error("OAuth model cannot re-read refresh state");
+        error.code = "OAUTH_REFRESH_FRESH_READ_UNAVAILABLE";
+        throw error;
+    }
+    const id = docOrId?._id || docOrId;
+    let query = model.findById(id);
+    if (query && typeof query.select === "function") {
+        query = query.select({ discord: 1, [tokenField]: 1 });
+    }
+    if (query && typeof query.lean === "function") query = query.lean();
+    return await query;
+}
+
+async function markRefreshFailure(doc, err, { model = OAuthUser, now = Date.now(), failMax = DEFAULT_REFRESH_FAIL_MAX, tokenField = "oauth" } = {}) {
+    const tokenState = doc?.[tokenField] || {};
+    const userId = doc?.discord?.userId || String(doc?._id || doc?.id || "unknown");
+    const previousRefreshToken = tokenState.encryptedRefreshToken;
+    const previousVersion = Number(tokenState.version || 0);
+    const nextFailCount = Number(tokenState.refreshFailCount || 0) + 1;
+    const isFatalGrant = String(err?.message || "").includes("invalid_grant") || err?.code === "invalid_grant";
+
+    const set = {
+        [tokenPath(tokenField, "refreshFailCount")]: nextFailCount,
+        [tokenPath(tokenField, "lastRefreshError")]: safeError(err),
+        updatedAt: now
+    };
+
+    const shouldRevoke = nextFailCount >= failMax || isFatalGrant;
+    if (shouldRevoke) {
+        set[tokenPath(tokenField, "revokedAt")] = now;
+        diagnosticStats.revokedCount++;
+    }
+
+    try {
+        const result = await model.updateOne(
+            {
+                _id: doc._id,
+                [tokenPath(tokenField, "encryptedRefreshToken")]: previousRefreshToken,
+                ...versionCondition(tokenField, previousVersion)
+            },
+            { $set: set }
+        );
+        const modified = Number(result?.modifiedCount ?? result?.nModified ?? 0);
+        if (modified !== 1) return conflictOutcome(tokenField, userId, "failure_state_changed");
+        diagnosticStats.failedRefreshes++;
+        return {
+            ok: false,
+            failed: true,
+            tokenField,
+            userId,
+            revoked: shouldRevoke,
+            error: safeError(err),
+            persisted: true,
+            persistenceError: null
+        };
+    } catch (writeErr) {
+        diagnosticStats.failedRefreshes++;
+        return {
+            ok: false,
+            failed: true,
+            tokenField,
+            userId,
+            revoked: false,
+            error: safeError(err),
+            persisted: false,
+            persistenceError: safeError(writeErr)
+        };
+    }
+}
+
+async function performTokenRefreshUnderLock({
+    doc,
+    model = OAuthUser,
+    discord = discordApi,
+    tokenField = "oauth",
+    now = Date.now(),
+    failMax = DEFAULT_REFRESH_FAIL_MAX,
+    redirectUri,
+    force = false
+}) {
+    const lockUserId = doc.discord?.userId || String(doc._id);
+    const fresh = await readFreshOAuthDocument(model, doc, tokenField);
+    if (!fresh) return conflictOutcome(tokenField, lockUserId, "document_missing");
+
+    const userId = fresh.discord?.userId || lockUserId;
+    const tokenState = fresh[tokenField] || {};
+
+    if (tokenState.revokedAt) {
+        return { ok: false, code: "token_revoked", reason: "Token is revoked", userId, tokenField };
+    }
+
+    const previousRefreshTokenEncrypted = tokenState.encryptedRefreshToken;
+    if (!previousRefreshTokenEncrypted) {
+        return { ok: false, code: "oauth_reauth_required", reason: "Missing refresh token", userId, tokenField };
+    }
+
+    const previousVersion = Number(tokenState.version || 0);
+
+    if (!force) {
+        const expiresAt = Number(tokenState.expiresAt || 0);
+        const margin = DEFAULT_ON_DEMAND_MARGIN_MS;
+        if (expiresAt > now + margin && tokenState.encryptedAccessToken) {
+            const rawAccess = decryptToken(tokenState.encryptedAccessToken);
+            if (rawAccess) {
+                return {
+                    ok: true,
+                    refreshed: false,
+                    accessToken: rawAccess,
+                    expiresAt,
+                    tokenField,
+                    userId
+                };
+            }
+        }
+    }
+
+    let rawRefreshToken;
+    try {
+        rawRefreshToken = decryptToken(previousRefreshTokenEncrypted);
+    } catch {
+        rawRefreshToken = null;
+    }
+    if (!rawRefreshToken) {
+        const decryptError = new Error("Failed to decrypt stored refresh token");
+        decryptError.code = "oauth_refresh_token_decrypt_failed";
+        return markRefreshFailure(fresh, decryptError, { model, now, failMax, tokenField });
+    }
+
+    let tokenData;
+    try {
+        tokenData = await discord.refreshToken(rawRefreshToken, redirectUri || resolveRedirectUriForField(tokenField));
+    } catch (error) {
+        return markRefreshFailure(fresh, error, { model, now, failMax, tokenField });
+    }
+
+    try {
+        validateTokenData(tokenData);
+    } catch (valErr) {
+        return markRefreshFailure(fresh, valErr, { model, now, failMax, tokenField });
+    }
+
+    const nextPayload = prepareStoredToken(tokenData, { now, previousVersion });
+    const result = await model.updateOne(
+        {
+            _id: fresh._id,
+            [tokenPath(tokenField, "encryptedRefreshToken")]: previousRefreshTokenEncrypted,
+            ...versionCondition(tokenField, previousVersion)
+        },
+        {
+            $set: {
+                [tokenField]: nextPayload,
+                updatedAt: now
+            }
+        }
+    );
+
+    const modified = Number(result?.modifiedCount ?? result?.nModified ?? 0);
+    if (modified !== 1) {
+        return conflictOutcome(tokenField, userId, "refresh_state_changed");
+    }
+
+    diagnosticStats.totalRefreshes++;
+    diagnosticStats.successfulRefreshes++;
+    diagnosticStats.lastRefreshAt = now;
+
+    return {
+        ok: true,
+        refreshed: true,
+        accessToken: tokenData.access_token,
+        expiresAt: nextPayload.expiresAt,
+        tokenField,
+        userId,
+        version: nextPayload.version
+    };
+}
+
+async function getAccessToken({
+    userId,
+    tokenField = "oauth",
+    forceRefresh = false,
+    model = OAuthUser,
+    discord = discordApi,
+    env = process.env,
+    now = Date.now(),
+    marginMs = DEFAULT_ON_DEMAND_MARGIN_MS
+} = {}) {
+    if (!userId) {
+        const error = new Error("userId is required to get access token");
+        error.code = "oauth_user_id_required";
+        throw error;
+    }
+
+    const doc = await model.findOne({ "discord.userId": String(userId) })
+        .select({ discord: 1, [tokenField]: 1 })
+        .lean();
+
+    if (!doc) {
+        return { ok: false, code: "user_not_found", reason: "User not found in OAuth registry", userId, tokenField };
+    }
+
+    const tokenState = doc[tokenField] || {};
+    if (tokenState.revokedAt) {
+        return { ok: false, code: "token_revoked", reason: "Token is marked revoked", userId, tokenField };
+    }
+
+    const expiresAt = Number(tokenState.expiresAt || 0);
+    const isDue = expiresAt <= (now + marginMs);
+
+    if (!forceRefresh && !isDue && tokenState.encryptedAccessToken) {
+        const decrypted = decryptToken(tokenState.encryptedAccessToken);
+        if (decrypted) {
+            return {
+                ok: true,
+                accessToken: decrypted,
+                refreshed: false,
+                expiresAt,
+                tokenField,
+                userId
+            };
+        }
+    }
+
+    const redirectUri = resolveRedirectUriForField(tokenField, env);
+    const lockKey = `${userId}:${tokenField}`;
+
+    return withTokenRefreshLock(lockKey, async () => {
+        return performTokenRefreshUnderLock({
+            doc,
+            model,
+            discord,
+            tokenField,
+            now: Date.now(),
+            failMax: getOAuthRefreshConfig(env).failMax,
+            redirectUri,
+            force: forceRefresh
+        });
+    });
+}
+
+function buildRefreshQuery(now, marginMs, failMax, tokenField = "oauth") {
+    return {
+        [tokenPath(tokenField, "encryptedRefreshToken")]: { $exists: true, $ne: "" },
+        [tokenPath(tokenField, "revokedAt")]: { $in: [null] },
+        $or: [
+            { [tokenPath(tokenField, "expiresAt")]: { $lte: now + marginMs } },
+            { [tokenPath(tokenField, "expiresAt")]: { $exists: false } },
+            { [tokenPath(tokenField, "expiresAt")]: null }
+        ],
+        $and: [{
+            $or: [
+                { [tokenPath(tokenField, "refreshFailCount")]: { $exists: false } },
+                { [tokenPath(tokenField, "refreshFailCount")]: { $lt: failMax } }
+            ]
+        }]
+    };
+}
+
+function refreshStateIsDue(tokenState, { now, marginMs, failMax }) {
+    if (!tokenState || typeof tokenState !== "object") return false;
+    if (!tokenState.encryptedRefreshToken || tokenState.revokedAt) return false;
+    if (Number(tokenState.refreshFailCount || 0) >= failMax) return false;
+    const expiresAt = Number(tokenState.expiresAt);
+    return !Number.isFinite(expiresAt) || expiresAt <= now + marginMs;
+}
+
+function applyRefreshOutcome(summary, outcome) {
+    if (outcome?.refreshed) {
+        summary.refreshed++;
+        return;
+    }
+    if (outcome?.skipped) {
+        summary.skipped++;
+        if (String(outcome.reason || "").includes("changed")) summary.conflicts++;
+        return;
+    }
+    if (!outcome?.failed) return;
+    summary.failed++;
+    if (outcome.revoked) summary.revoked++;
+    if (outcome.persisted === false) summary.persistenceFailed++;
+    if (summary.errors.length < 10) summary.errors.push(outcome);
+}
+
+function recordRefreshException(summary, tokenField, doc, error) {
+    summary.failed++;
+    summary.persistenceFailed++;
+    if (summary.errors.length >= 10) return;
+    summary.errors.push({
+        ok: false,
+        tokenField,
+        userId: doc.discord?.userId || doc.id,
+        error: safeError(error),
+        persisted: false
+    });
+}
+
+async function refreshTokenField({
+    model,
+    tokenField,
+    redirectUri,
+    now,
+    config,
+    discordApiInstance
+}) {
+    const query = buildRefreshQuery(now, config.marginMs, config.failMax, tokenField);
+    const docs = await model.find(query)
+        .sort({ [tokenPath(tokenField, "expiresAt")]: 1, updatedAt: 1 })
+        .limit(config.scanLimit);
+
+    const summary = {
+        scanned: docs.length,
+        refreshed: 0,
+        skipped: 0,
+        conflicts: 0,
+        failed: 0,
+        revoked: 0,
+        persistenceFailed: 0,
+        errors: []
+    };
+
+    for (const doc of docs) {
+        const lockUserId = doc.discord?.userId || String(doc._id);
+        const lockKey = `${lockUserId}:${tokenField}`;
+        try {
+            const outcome = await withTokenRefreshLock(lockKey, async () => {
+                const fresh = await readFreshOAuthDocument(model, doc, tokenField);
+                if (!fresh) return conflictOutcome(tokenField, lockUserId, "document_missing");
+
+                const userId = fresh.discord?.userId || lockUserId;
+                const tokenState = fresh[tokenField] || {};
+                if (!refreshStateIsDue(tokenState, { now, marginMs: config.marginMs, failMax: config.failMax })) {
+                    return conflictOutcome(tokenField, userId, "not_due");
+                }
+
+                return performTokenRefreshUnderLock({
+                    doc: fresh,
+                    model,
+                    discord: discordApiInstance,
+                    tokenField,
+                    now,
+                    failMax: config.failMax,
+                    redirectUri,
+                    force: true
+                });
+            });
+            applyRefreshOutcome(summary, outcome);
+        } catch (error) {
+            recordRefreshException(summary, tokenField, doc, error);
+        }
+    }
+
+    return summary;
+}
+
+async function refreshDueTokens(options = {}) {
+    const env = options.env || process.env;
+    const config = {
+        ...getOAuthRefreshConfig(env),
+        ...options
+    };
+
+    if (!config.enabled) {
+        return { skipped: true, reason: "oauth_token_storage_disabled", refreshed: 0, failed: 0, revoked: 0 };
+    }
+
+    const now = Number(config.now || Date.now());
+    const model = config.OAuthUserModel || OAuthUser;
+    const discordApiInstance = config.discordApi || discordApi;
+    const tokenFields = config.tokenFields || [
+        { tokenField: "oauth", redirectUri: config.verificationRedirectUri || config.redirectUri },
+        { tokenField: "adminOAuth", redirectUri: config.adminRedirectUri }
+    ];
+
+    const summary = {
+        skipped: false,
+        scanned: 0,
+        refreshed: 0,
+        conflicts: 0,
+        failed: 0,
+        revoked: 0,
+        persistenceFailed: 0,
+        byField: {},
+        errors: []
+    };
+
+    for (const fieldConfig of tokenFields) {
+        const tokenField = fieldConfig.tokenField || fieldConfig.field || "oauth";
+        const fieldSummary = await refreshTokenField({
+            model,
+            tokenField,
+            redirectUri: fieldConfig.redirectUri || config.redirectUri,
+            now,
+            config,
+            discordApiInstance
+        });
+
+        summary.byField[tokenField] = fieldSummary;
+        summary.scanned += fieldSummary.scanned;
+        summary.refreshed += fieldSummary.refreshed;
+        summary.conflicts += fieldSummary.conflicts;
+        summary.failed += fieldSummary.failed;
+        summary.revoked += fieldSummary.revoked;
+        summary.persistenceFailed += fieldSummary.persistenceFailed || 0;
+        summary.errors.push(...fieldSummary.errors.slice(0, Math.max(0, 10 - summary.errors.length)));
+    }
+
+    diagnosticStats.lastRefreshAt = now;
+    diagnosticStats.lastRefreshSummary = summary;
+    return summary;
+}
+
+async function listAccessTokenCandidates({
+    requiredScopes = ["guilds.join"],
+    limit = 500,
+    afterId = null,
+    model = OAuthUser,
+    env = process.env
+} = {}) {
+    const config = getOAuthRefreshConfig(env);
+    const tokenBranches = TOKEN_FIELDS.map(tokenField => ({
+        [`${tokenField}.encryptedRefreshToken`]: { $exists: true, $ne: "" },
+        [`${tokenField}.revokedAt`]: { $in: [null] },
+        $or: [
+            { [`${tokenField}.refreshFailCount`]: { $exists: false } },
+            { [`${tokenField}.refreshFailCount`]: { $lt: config.failMax } }
+        ]
+    }));
+
+    const baseFilter = {
+        $and: [
+            {
+                $or: [
+                    { deletedAt: { $exists: false } },
+                    { deletedAt: null }
+                ]
+            },
+            { $or: tokenBranches }
+        ]
+    };
+
+    const filter = afterId ? { $and: [baseFilter, { _id: { $gt: afterId } }] } : baseFilter;
+    const docs = await model.find(filter)
+        .select("discord.userId oauth adminOAuth updatedAt _id")
+        .sort({ _id: 1 })
+        .limit(limit)
+        .lean();
+
+    const normalizedRequired = new Set(requiredScopes.map(s => String(s || "").trim()).filter(Boolean));
+    const candidates = [];
+
+    for (const doc of docs) {
+        const userId = String(doc.discord?.userId || "").trim();
+        if (!userId) continue;
+
+        let chosenField = null;
+        let chosenScope = "";
+
+        for (const tokenField of TOKEN_FIELDS) {
+            const tokenState = doc[tokenField] || {};
+            if (!tokenState.encryptedRefreshToken || tokenState.revokedAt) continue;
+            if (Number(tokenState.refreshFailCount || 0) >= config.failMax) continue;
+
+            const scopes = new Set(String(tokenState.scope || "").split(/\s+/).filter(Boolean));
+            let matchesAll = true;
+            for (const req of normalizedRequired) {
+                if (!scopes.has(req)) {
+                    matchesAll = false;
+                    break;
+                }
+            }
+            if (matchesAll) {
+                chosenField = tokenField;
+                chosenScope = tokenState.scope || "";
+                break;
+            }
+        }
+
+        if (chosenField) {
+            candidates.push({
+                userId,
+                tokenField: chosenField,
+                scope: chosenScope,
+                recordId: doc._id
+            });
+        }
+    }
+
+    return candidates;
+}
+
+function revealTokenStateForOwner(token = {}) {
+    const issuedAt = Number(token.rawTokenMeta?.receivedAt || 0) || null;
+    const expiresAt = Number(token.expiresAt || 0) || null;
+    return {
+        accessToken: token.encryptedAccessToken ? decryptToken(token.encryptedAccessToken) : null,
+        refreshToken: token.encryptedRefreshToken ? decryptToken(token.encryptedRefreshToken) : null,
+        scope: token.scope || "",
+        tokenType: token.tokenType || "",
+        issuedAt,
+        expiresAt,
+        lifetimeMs: issuedAt && expiresAt ? Math.max(0, expiresAt - issuedAt) : null,
+        lastRefreshAt: token.lastRefreshAt || null,
+        refreshFailCount: Number(token.refreshFailCount || 0),
+        revokedAt: token.revokedAt || null
+    };
+}
+
+async function getOwnerTokenState(userId, { model = OAuthUser, tokenFields = TOKEN_FIELDS } = {}) {
+    if (!userId) {
+        const error = new Error("User ID is required for owner token reveal");
+        error.code = "oauth_user_id_required";
+        throw error;
+    }
+
+    const doc = await model.findOne({ "discord.userId": String(userId) })
+        .select(`discord.userId ${tokenFields.join(" ")}`)
+        .lean();
+
+    const result = {};
+    for (const field of tokenFields) {
+        result[field] = revealTokenStateForOwner(doc?.[field] || {});
+    }
+    return result;
+}
+
+function checkTokenCryptoReasons(token, now) {
+    const reasons = [];
+    const accessToken = token.encryptedAccessToken ? decryptToken(token.encryptedAccessToken) : null;
+    const refreshToken = token.encryptedRefreshToken ? decryptToken(token.encryptedRefreshToken) : null;
+
+    if (!token.encryptedAccessToken) reasons.push("missing_access_token");
+    else if (!accessToken) reasons.push("access_token_decrypt_failed");
+
+    if (!token.encryptedRefreshToken) reasons.push("missing_refresh_token");
+    else if (!refreshToken) reasons.push("refresh_token_decrypt_failed");
+
+    if (token.revokedAt) reasons.push("token_revoked");
+
+    const isExpired = Number(token.expiresAt || 0) > 0 && Number(token.expiresAt) <= now;
+    if (isExpired && !refreshToken) {
+        reasons.push("access_token_expired_without_refresh");
+    }
+    return reasons;
+}
+
+function collectMissingScopeReasons(tokenScope, requiredScopes = REQUIRED_USER_SCOPES) {
+    const scopes = new Set(String(tokenScope || "").split(/\s+/).filter(Boolean));
+    const missing = [];
+    for (const scope of requiredScopes) {
+        if (!scopes.has(scope)) missing.push(`missing_scope:${scope}`);
+    }
+    return missing;
+}
+
+function recoveryReasonLabel(reason) {
+    const labels = {
+        missing_access_token: "ไม่มี Access Token",
+        access_token_decrypt_failed: "ถอดรหัส Access Token ไม่สำเร็จ",
+        missing_refresh_token: "ไม่มี Refresh Token",
+        refresh_token_decrypt_failed: "ถอดรหัส Refresh Token ไม่สำเร็จ",
+        token_revoked: "Token ถูกยกเลิก",
+        access_token_expired_without_refresh: "Access Token หมดอายุและต่ออายุไม่ได้"
+    };
+    if (String(reason).startsWith("missing_scope:")) return `ขาด Scope ${String(reason).slice(14)}`;
+    return labels[reason] || String(reason);
+}
+
+async function getRecoveryStatuses(userIds, {
+    model = OAuthUser,
+    requiredScopes = REQUIRED_USER_SCOPES,
+    tokenField = "oauth",
+    now = Date.now()
+} = {}) {
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+        return new Map();
+    }
+
+    const safeIds = userIds.map(id => String(id || "")).filter(Boolean);
+    const docs = await model.find({ "discord.userId": { $in: safeIds } })
+        .select(`discord.userId ${tokenField}`)
+        .lean();
+
+    const docMap = new Map(docs.map(d => [String(d.discord?.userId || ""), d]));
+    const resultMap = new Map();
+
+    for (const userId of safeIds) {
+        const doc = docMap.get(userId);
+        const tokenState = doc?.[tokenField] || {};
+        const reasons = [
+            ...checkTokenCryptoReasons(tokenState, now),
+            ...collectMissingScopeReasons(tokenState.scope, requiredScopes)
+        ];
+        const uniqueReasons = [...new Set(reasons)];
+        resultMap.set(userId, {
+            reasons: uniqueReasons,
+            reasonLabels: uniqueReasons.map(recoveryReasonLabel)
+        });
+    }
+
+    return resultMap;
+}
+
+function tokenRecoveryReasons(token = {}, now = Date.now(), requiredScopes = REQUIRED_USER_SCOPES) {
+    const reasons = [
+        ...checkTokenCryptoReasons(token, now),
+        ...collectMissingScopeReasons(token?.scope, requiredScopes)
+    ];
+    return [...new Set(reasons)];
+}
+
+async function migrateStoredTokenEncryption({
+    dryRun = false,
+    limit = 200,
+    model = OAuthUser
+} = {}) {
+    const targetFields = [
+        "oauth.encryptedAccessToken",
+        "oauth.encryptedRefreshToken",
+        "adminOAuth.encryptedAccessToken",
+        "adminOAuth.encryptedRefreshToken"
+    ];
+
+    const filter = {
+        $or: targetFields.map(field => ({
+            [field]: {
+                $exists: true,
+                $type: "string",
+                $ne: "",
+                $not: /^v3:gcm:/
+            }
+        }))
+    };
+
+    const docs = await model.find(filter).limit(limit);
+    const summary = {
+        scanned: docs.length,
+        updated: 0,
+        errors: 0
+    };
+
+    for (const doc of docs) {
+        const set = {};
+        let modified = false;
+
+        for (const field of targetFields) {
+            const parts = field.split(".");
+            const currentVal = doc[parts[0]]?.[parts[1]];
+            if (typeof currentVal === "string" && currentVal.length > 0 && !currentVal.startsWith("v3:gcm:")) {
+                try {
+                    const decrypted = decryptTokenForMigration(currentVal);
+                    if (decrypted) {
+                        set[field] = encryptToken(decrypted);
+                        modified = true;
+                    }
+                } catch {
+                    summary.errors++;
+                }
+            }
+        }
+
+        if (modified && !dryRun) {
+            try {
+                await model.updateOne({ _id: doc._id }, { $set: set });
+                summary.updated++;
+            } catch {
+                summary.errors++;
+            }
+        } else if (modified && dryRun) {
+            summary.updated++;
+        }
+    }
+
+    return summary;
+}
+
+async function revokeToken({
+    userId,
+    tokenField = "oauth",
+    tokenType = "refresh_token",
+    model = OAuthUser,
+    discord = discordApi,
+    now = Date.now()
+} = {}) {
+    if (!userId) {
+        const error = new Error("User ID is required for revoke");
+        error.code = "oauth_user_id_required";
+        throw error;
+    }
+
+    const doc = await model.findOne({ "discord.userId": String(userId) })
+        .select({ discord: 1, [tokenField]: 1 });
+
+    if (!doc) {
+        return { ok: false, code: "user_not_found", reason: "User not found" };
+    }
+
+    const tokenState = doc[tokenField] || {};
+    const fieldKey = tokenType === "access_token" ? "encryptedAccessToken" : "encryptedRefreshToken";
+    const encryptedVal = tokenState[fieldKey];
+
+    if (encryptedVal) {
+        const raw = decryptToken(encryptedVal);
+        if (raw && typeof discord.revokeToken === "function") {
+            try {
+                await discord.revokeToken(raw, tokenType);
+            } catch (err) {
+                diagnosticStats.lastError = safeError(err);
+            }
+        }
+    }
+
+    doc[tokenField] = doc[tokenField] || {};
+    doc[tokenField].revokedAt = now;
+    doc.updatedAt = now;
+    await doc.save();
+
+    diagnosticStats.revokedCount++;
+    return { ok: true, revoked: true, userId, tokenField };
+}
+
+function getDiagnostics() {
+    return {
+        running: isStarted,
+        timerActive: !!backgroundTimer,
+        inFlight: refreshInFlight,
+        backgroundIntervalMs,
+        activeRefreshLocks: refreshLocks.size,
+        ...diagnosticStats
+    };
+}
+
+let backgroundOptions = {};
+
+async function runScheduledSweep() {
+    if (refreshInFlight) return;
+    const model = backgroundOptions.OAuthUserModel || OAuthUser;
+    if (model?.db && typeof model.db.readyState === "number" && model.db.readyState !== 1 && !backgroundOptions.forceSweep) {
+        return;
+    }
+    refreshInFlight = true;
+    try {
+        inFlightRefreshPromise = refreshDueTokens(backgroundOptions);
+        await inFlightRefreshPromise;
+    } catch (err) {
+        diagnosticStats.lastError = safeError(err);
+        console.error("[OAUTH_MANAGER] background sweep error:", safeError(err));
+    } finally {
+        refreshInFlight = false;
+        inFlightRefreshPromise = null;
+    }
+}
+
+async function start(options = {}) {
+    if (startPromise) return startPromise;
+    if (isStarted) return getDiagnostics();
+
+    backgroundOptions = { ...options };
+    const env = options.env || process.env;
+    const config = getOAuthRefreshConfig(env);
+    backgroundIntervalMs = options.intervalMs || config.intervalMs || DEFAULT_REFRESH_INTERVAL_MS;
+
+    startPromise = (async () => {
+        isStarted = true;
+        diagnosticStats.startedAt = Date.now();
+        diagnosticStats.stoppedAt = null;
+
+        try {
+            await runScheduledSweep();
+        } catch (err) {
+            diagnosticStats.lastError = safeError(err);
+        }
+
+        if (!backgroundTimer) {
+            backgroundTimer = setInterval(() => {
+                runScheduledSweep().catch(err => {
+                    diagnosticStats.lastError = safeError(err);
+                });
+            }, backgroundIntervalMs);
+            if (typeof backgroundTimer.unref === "function") backgroundTimer.unref();
+        }
+
+        return getDiagnostics();
+    })();
+
+    return startPromise;
+}
+
+async function stop() {
+    if (backgroundTimer) {
+        clearInterval(backgroundTimer);
+        backgroundTimer = null;
+    }
+    if (inFlightRefreshPromise) {
+        try {
+            await inFlightRefreshPromise;
+        } catch {}
+    }
+    isStarted = false;
+    startPromise = null;
+    diagnosticStats.stoppedAt = Date.now();
+    return getDiagnostics();
+}
+
+function resetInternalStateForTesting() {
+    if (backgroundTimer) {
+        clearInterval(backgroundTimer);
+        backgroundTimer = null;
+    }
+    isStarted = false;
+    startPromise = null;
+    refreshInFlight = false;
+    inFlightRefreshPromise = null;
+    refreshLocks.clear();
+    diagnosticStats.totalRefreshes = 0;
+    diagnosticStats.successfulRefreshes = 0;
+    diagnosticStats.failedRefreshes = 0;
+    diagnosticStats.revokedCount = 0;
+    diagnosticStats.conflictCount = 0;
+    diagnosticStats.lastRefreshAt = null;
+    diagnosticStats.lastRefreshSummary = null;
+    diagnosticStats.lastError = null;
+}
+
+module.exports = {
+    DEFAULT_REFRESH_MARGIN_MS,
+    DEFAULT_REFRESH_SCAN_LIMIT,
+    DEFAULT_REFRESH_FAIL_MAX,
+    DEFAULT_REFRESH_INTERVAL_MS,
+    DEFAULT_ON_DEMAND_MARGIN_MS,
+    REQUIRED_USER_SCOPES,
+    TOKEN_FIELDS,
+
+    getPublicBaseUrl,
+    getVerificationRedirectUri,
+    getAdminRedirectUri,
+    getOAuthRefreshConfig,
+    validateTokenData,
+    prepareStoredToken,
+    exchangeAuthorizationCode,
+    commitVerificationActivation,
+    withTokenRefreshLock,
+    getAccessToken,
+    refreshDueTokens,
+    listAccessTokenCandidates,
+    getOwnerTokenState,
+    getRecoveryStatuses,
+    recoveryReasonLabel,
+    tokenRecoveryReasons,
+    encryptToken,
+    decryptToken,
+    decryptTokenForMigration,
+    migrateStoredTokenEncryption,
+    revokeToken,
+    start,
+    stop,
+    getDiagnostics,
+
+    _test: {
+        tokenPath,
+        versionCondition,
+        conflictOutcome,
+        readFreshOAuthDocument,
+        markRefreshFailure,
+        performTokenRefreshUnderLock,
+        buildRefreshQuery,
+        refreshStateIsDue,
+        applyRefreshOutcome,
+        refreshTokenField,
+        revealTokenStateForOwner,
+        checkTokenCryptoReasons,
+        collectMissingScopeReasons,
+        resetInternalStateForTesting,
+        refreshLocks
+    }
+};

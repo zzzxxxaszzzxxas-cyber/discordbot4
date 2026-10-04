@@ -48,7 +48,7 @@ describe('OAuth callback integration contracts', () => {
     test('uses a fixed Discord authorize target and an explicit forced token-storage contract', () => {
         expect(oauthStartRouteSource).toContain('return `https://discord.com/oauth2/authorize?${params.toString()}`;');
         expect(oauthStartRouteSource).toContain('const VERIFY_SCOPE = "identify email connections guilds guilds.members.read guilds.join";');
-        expect(callbackRouteSource).toContain('applyForcedOAuthTokenStorage(updateSet, tokenData);');
+        expect(callbackRouteSource).toContain('oauthTokenManager.commitVerificationActivation');
         expect(callbackRouteSource).not.toContain('applyOAuthTokenStorage(updateSet, tokenData, storagePolicy)');
         expect(callbackRouteSource).not.toContain('storagePolicy = {}');
     });

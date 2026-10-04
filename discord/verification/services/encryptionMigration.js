@@ -3,10 +3,9 @@
 const OAuthUser = require("../models/OAuthUser");
 const VerifyLog = require("../models/VerifyLog");
 const IpIdentityLink = require("../models/IpIdentityLink");
+const oauthTokenManager = require("../../core/oauthTokenManager");
 const {
-    encryptToken,
     encryptIP,
-    decryptTokenForMigration,
     decryptIPForMigration
 } = require("../utils/crypto");
 const { readFiniteInteger } = require("../../core/numbers");
@@ -45,8 +44,8 @@ function migrationSpecs(models) {
             name: "oauth_tokens",
             model: models.OAuthUserModel,
             fields: TOKEN_FIELDS,
-            decrypt: decryptTokenForMigration,
-            encrypt: encryptToken
+            decrypt: oauthTokenManager.decryptTokenForMigration,
+            encrypt: oauthTokenManager.encryptToken
         },
         {
             name: "verify_log_ips",

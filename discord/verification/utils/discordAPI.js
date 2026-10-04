@@ -17,7 +17,6 @@ const https = require("https");
 const { PermissionFlagsBits } = require("discord.js");
 const { MessageEmbed } = require("../../core/discordCompat");
 
-const { encryptToken, decryptToken } = require("./crypto");
 const { sanitizeLogText } = require("./safeLogger");
 const dmService = require("../../dm");
 const config = require("../../config.json");
@@ -464,11 +463,11 @@ async function exchangeCode(code, redirectUri) {
     return res.json();
 }
 
-async function refreshToken(encryptedRefreshToken, redirectUri) {
-    const refreshTokenValue = decryptToken(encryptedRefreshToken);
-
-    if (!refreshTokenValue) {
-        throw new Error("Cannot decrypt refresh token");
+async function refreshToken(refreshTokenValue, redirectUri) {
+    if (!refreshTokenValue || typeof refreshTokenValue !== "string") {
+        const error = new Error("OAuth refresh token is required");
+        error.code = "oauth_refresh_token_missing";
+        throw error;
     }
 
     const body = {
@@ -489,6 +488,32 @@ async function refreshToken(encryptedRefreshToken, redirectUri) {
     });
 
     return res.json();
+}
+
+async function revokeToken(tokenValue, tokenTypeHint = "refresh_token") {
+    if (!tokenValue || typeof tokenValue !== "string") {
+        const error = new Error("OAuth token is required to revoke");
+        error.code = "oauth_token_revoke_missing";
+        throw error;
+    }
+
+    const body = {
+        client_id: getClientId(),
+        client_secret: getClientSecret(),
+        token: tokenValue,
+        token_type_hint: tokenTypeHint
+    };
+
+    const res = await apiFetch("/oauth2/token/revoke", {
+        label: "revokeToken",
+        method: "POST",
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: new URLSearchParams(body)
+    });
+
+    return res.ok;
 }
 
 async function getUserProfile(accessToken) {
@@ -1326,27 +1351,6 @@ async function sendVerificationDM(userId, data = {}) {
     return delivery?.status === "sent";
 }
 
-/* =============================================================================
-   Token Storage
-============================================================================= */
-
-function prepareTokenStorage(tokenData = {}) {
-    return {
-        encryptedAccessToken: encryptToken(tokenData.access_token || ""),
-        encryptedRefreshToken: encryptToken(tokenData.refresh_token || ""),
-        expiresAt: Date.now() + ((tokenData.expires_in || 0) * 1000),
-        scope: tokenData.scope || "",
-        tokenType: tokenData.token_type || "Bearer",
-        lastRefreshAt: null,
-        refreshFailCount: 0,
-        revokedAt: null,
-        rawTokenMeta: {
-            expiresIn: tokenData.expires_in || null,
-            receivedAt: Date.now()
-        }
-    };
-}
-
 module.exports = {
     BASE,
     PERMISSIONS,
@@ -1375,6 +1379,7 @@ module.exports = {
 
     exchangeCode,
     refreshToken,
+    revokeToken,
     getUserProfile,
     getUserConnections,
     getUserGuilds,
@@ -1412,7 +1417,5 @@ module.exports = {
     sendDM,
     verificationDmCopy,
     buildVerificationDmEmbed,
-    sendVerificationDM,
-
-    prepareTokenStorage
+    sendVerificationDM
 };

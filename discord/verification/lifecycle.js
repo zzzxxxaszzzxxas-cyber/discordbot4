@@ -8,10 +8,7 @@ const {
     cleanupSnapshotGarbage,
     getSnapshotCleanupConfig
 } = require("./services/snapshotCleanup");
-const {
-    getOAuthRefreshConfig,
-    refreshPersistedOAuthTokens
-} = require("./utils/oauthTokenLifecycle");
+const oauthTokenManager = require("../core/oauthTokenManager");
 const {
     runAutomaticMigration,
     config: getAutomaticMigrationConfig
@@ -288,7 +285,7 @@ async function runVerificationMaintenance(options = {}) {
 
         if (!dryRun) {
             try {
-                lastOAuthRefreshSummary = await refreshPersistedOAuthTokens();
+                lastOAuthRefreshSummary = await oauthTokenManager.refreshDueTokens();
                 lastOAuthRefreshAt = Date.now();
                 lastOAuthRefreshError = null;
             } catch (err) {
@@ -324,12 +321,19 @@ async function runVerificationMaintenance(options = {}) {
 async function startVerificationRuntime(options = {}) {
     if (runtimeStartPromise) return runtimeStartPromise;
     if (maintenanceTimer) return getVerificationDiagnostics();
+    const tokenManager = options.oauthTokenManager || oauthTokenManager;
     const maintenanceRunner = options.maintenanceRunner || runVerificationMaintenance;
     const createInterval = options.setIntervalFn || setInterval;
     maintenanceClearInterval = options.clearIntervalFn || clearInterval;
     startLookupCacheCleanup();
     runtimeStartPromise = (async () => {
         await maintenanceRunner();
+        if (typeof tokenManager.start === "function") {
+            tokenManager.start().catch(err => {
+                lastError = safeError(err);
+                console.error("[VERIFICATION] token manager startup failed:", lastError);
+            });
+        }
         if (!maintenanceTimer) {
             maintenanceTimer = createInterval(() => maintenanceRunner().catch(err => {
                 lastError = safeError(err);
@@ -361,12 +365,16 @@ async function startVerificationRuntime(options = {}) {
     return runtimeStartPromise;
 }
 
-async function stopVerificationRuntime() {
+async function stopVerificationRuntime(options = {}) {
+    const tokenManager = options.oauthTokenManager || oauthTokenManager;
     if (runtimeStartPromise) await runtimeStartPromise.catch(() => {});
     if (maintenanceTimer) maintenanceClearInterval(maintenanceTimer);
     maintenanceTimer = null;
     maintenanceClearInterval = clearInterval;
     stopLookupCacheCleanup();
+    if (typeof tokenManager.stop === "function") {
+        await tokenManager.stop();
+    }
     await waitForMaintenanceIdle();
 }
 
@@ -400,10 +408,11 @@ function getVerificationDiagnostics() {
             lastSummary: lastSummary?.encryptionMigration || null
         },
         oauthTokenRefresh: {
-            config: getOAuthRefreshConfig(),
+            config: oauthTokenManager.getOAuthRefreshConfig(),
             lastRunAt: lastOAuthRefreshAt,
             lastError: lastOAuthRefreshError,
-            lastSummary: lastOAuthRefreshSummary
+            lastSummary: lastOAuthRefreshSummary,
+            diagnostics: oauthTokenManager.getDiagnostics()
         }
     };
 }

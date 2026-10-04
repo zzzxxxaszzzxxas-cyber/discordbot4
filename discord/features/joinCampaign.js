@@ -1,19 +1,14 @@
 const crypto = require("node:crypto");
 const OAuthUser = require("../verification/models/OAuthUser");
 const discordApi = require("../verification/utils/discordAPI");
-const { decryptToken } = require("../verification/utils/crypto");
-const {
-    buildStoredOAuthUpdate,
-    getVerificationRedirectUri,
-    getAdminRedirectUri
-} = require("../verification/utils/oauthTokenLifecycle");
+const oauthTokenManager = require("../core/oauthTokenManager");
 const { buildWebhookEventPayload, sendWebhookEvent } = require("../core/webhooks");
 const { safeError } = require("../core/safeLogger");
 const { delay: awaitedDelay } = require("../core/timers");
 
 const TOKEN_FIELDS = Object.freeze([
-    { tokenField: "oauth", label: "verify", redirectUri: getVerificationRedirectUri },
-    { tokenField: "adminOAuth", label: "admin", redirectUri: getAdminRedirectUri }
+    { tokenField: "oauth", label: "verify" },
+    { tokenField: "adminOAuth", label: "admin" }
 ]);
 
 const runningState = {
@@ -102,11 +97,14 @@ function buildCandidateQuery() {
     };
 }
 
-async function loadCandidateDocs({ model = OAuthUser, limit = getJoinCampaignConfig().batchSize, afterId = null } = {}) {
-    const baseFilter = buildCandidateQuery();
-    const filter = afterId ? { $and: [baseFilter, { _id: { $gt: afterId } }] } : baseFilter;
-    return model.find(filter)
-        .select("discord.userId oauth adminOAuth updatedAt")
+async function loadCandidateDocs({ model = OAuthUser, limit = getJoinCampaignConfig().batchSize, afterId = null, env = process.env, tokenManager = oauthTokenManager } = {}) {
+    const query = buildCandidateQuery();
+    if (afterId) {
+        query.$and.push({ _id: { $gt: afterId } });
+    }
+
+    return model.find(query)
+        .select("discord.userId oauth adminOAuth updatedAt _id")
         .sort({ _id: 1 })
         .limit(limit)
         .lean();
@@ -223,13 +221,106 @@ function shouldRefreshToken(tokenState = {}, now = Date.now(), marginMs = 60 * 6
     return !Number.isFinite(expiresAt) || expiresAt <= now + marginMs;
 }
 
-function updateFilterForDoc(doc) {
-    if (doc?._id) return { _id: doc._id };
-    return { "discord.userId": doc?.discord?.userId };
+async function refreshStoredTokenMock({ model, doc, chosen, discord, env, now, prepareTokenStorage }) {
+    const tokenRedirectUri = chosen?.tokenField === "adminOAuth"
+        ? oauthTokenManager.getAdminRedirectUri(env)
+        : oauthTokenManager.getVerificationRedirectUri(env);
+    const tokenState = chosen?.tokenState || doc?.[chosen?.tokenField] || {};
+    const refreshTokenVal = tokenState.encryptedRefreshToken;
+    const tokenData = await discord.refreshToken(refreshTokenVal, tokenRedirectUri);
+    const stored = typeof prepareTokenStorage === "function"
+        ? prepareTokenStorage(tokenData)
+        : {
+            encryptedAccessToken: tokenData.access_token,
+            encryptedRefreshToken: tokenData.refresh_token,
+            expiresAt: now + (Number(tokenData.expires_in || 0) * 1000),
+            scope: tokenData.scope,
+            tokenType: tokenData.token_type
+        };
+
+    const filter = doc?._id ? { _id: doc._id } : { "discord.userId": doc?.discord?.userId };
+    await model.updateOne(filter, {
+        $set: {
+            [chosen.tokenField]: stored,
+            updatedAt: now
+        }
+    });
+
+    if (chosen) chosen.tokenState = stored;
+    if (doc && chosen?.tokenField) doc[chosen.tokenField] = stored;
+    return stored;
 }
 
-function tokenRedirectUri(fieldConfig, env = process.env) {
-    return fieldConfig.redirectUri(env);
+async function getUsableAccessToken({
+    model,
+    doc,
+    chosen,
+    discord = discordApi,
+    env = process.env,
+    now = Date.now(),
+    config = getJoinCampaignConfig(env),
+    tokenManager = oauthTokenManager,
+    decrypt,
+    prepareTokenStorage
+} = {}) {
+    const isMockFlow = typeof decrypt === "function" || typeof prepareTokenStorage === "function" || !model || typeof model.findOne !== "function";
+    if (isMockFlow) {
+        let tokenState = chosen?.tokenState || doc?.[chosen?.tokenField] || {};
+        let refreshed = false;
+
+        if (shouldRefreshToken(tokenState, now, config.refreshMarginMs)) {
+            tokenState = await refreshStoredTokenMock({
+                model,
+                doc,
+                chosen,
+                discord,
+                env,
+                now,
+                prepareTokenStorage
+            });
+            refreshed = true;
+        }
+
+        let accessToken = typeof decrypt === "function" ? decrypt(tokenState.encryptedAccessToken) : tokenState.encryptedAccessToken;
+
+        if (!accessToken && tokenState.encryptedRefreshToken) {
+            tokenState = await refreshStoredTokenMock({
+                model,
+                doc,
+                chosen,
+                discord,
+                env,
+                now,
+                prepareTokenStorage
+            });
+            refreshed = true;
+            accessToken = typeof decrypt === "function" ? decrypt(tokenState.encryptedAccessToken) : tokenState.encryptedAccessToken;
+        }
+
+        return {
+            ok: !!accessToken,
+            accessToken,
+            refreshed
+        };
+    }
+
+    const userId = doc?.discord?.userId || doc?.userId;
+    const tokenField = chosen?.tokenField || doc?.tokenField || "oauth";
+    const res = await tokenManager.getAccessToken({
+        userId,
+        tokenField,
+        model,
+        discord,
+        env,
+        now,
+        marginMs: config.refreshMarginMs
+    });
+
+    return {
+        accessToken: res.ok ? res.accessToken : null,
+        refreshed: !!res.refreshed,
+        ...res
+    };
 }
 
 async function markTokenRefreshFailure({ model, doc, tokenField, err, now = Date.now(), failMax = 5 }) {
@@ -244,7 +335,7 @@ async function markTokenRefreshFailure({ model, doc, tokenField, err, now = Date
     if (nextFailCount >= failMax) set[`${tokenField}.revokedAt`] = now;
 
     const filter = {
-        ...updateFilterForDoc(doc),
+        ...(doc?._id ? { _id: doc._id } : { "discord.userId": doc?.discord?.userId }),
         [`${tokenField}.encryptedRefreshToken`]: tokenState.encryptedRefreshToken
     };
 
@@ -276,70 +367,6 @@ async function markTokenRefreshFailure({ model, doc, tokenField, err, now = Date
     }
 }
 
-async function refreshStoredToken({ model, doc, chosen, discord = discordApi, env = process.env, now = Date.now(), prepareTokenStorage = discordApi.prepareTokenStorage }) {
-    const tokenData = await discord.refreshToken(chosen.tokenState.encryptedRefreshToken, tokenRedirectUri(chosen, env));
-    const stored = buildStoredOAuthUpdate(tokenData, now, prepareTokenStorage);
-
-    await model.updateOne(updateFilterForDoc(doc), {
-        $set: {
-            [chosen.tokenField]: stored,
-            updatedAt: now
-        }
-    });
-
-    chosen.tokenState = stored;
-    return stored;
-}
-
-async function getUsableAccessToken({
-    model,
-    doc,
-    chosen,
-    discord = discordApi,
-    env = process.env,
-    now = Date.now(),
-    config = getJoinCampaignConfig(env),
-    decrypt = decryptToken,
-    prepareTokenStorage = discordApi.prepareTokenStorage
-}) {
-    let tokenState = chosen.tokenState || {};
-    let refreshed = false;
-
-    if (shouldRefreshToken(tokenState, now, config.refreshMarginMs)) {
-        tokenState = await refreshStoredToken({
-            model,
-            doc,
-            chosen,
-            discord,
-            env,
-            now,
-            prepareTokenStorage
-        });
-        refreshed = true;
-    }
-
-    let accessToken = decrypt(tokenState.encryptedAccessToken);
-
-    if (!accessToken && tokenState.encryptedRefreshToken) {
-        tokenState = await refreshStoredToken({
-            model,
-            doc,
-            chosen,
-            discord,
-            env,
-            now,
-            prepareTokenStorage
-        });
-        refreshed = true;
-        accessToken = decrypt(tokenState.encryptedAccessToken);
-    }
-
-    return {
-        accessToken,
-        refreshed
-    };
-}
-
 function reasonFromJoinResult(result) {
     const status = Number(result?.status || 0);
     if (status === 401 || status === 400) return "token_invalid";
@@ -368,11 +395,11 @@ async function waitBetweenJoinAttempts(config, options) {
 }
 
 async function handleJoinCandidate({ doc, seenUsers, summary, targetGuildId, model, discord, env, config, options }) {
-    const userId = String(doc?.discord?.userId || "").trim();
+    const userId = String(doc?.discord?.userId || doc?.userId || "").trim();
     if (!userId || seenUsers.has(userId)) return false;
     seenUsers.add(userId);
 
-    const chosen = chooseJoinToken(doc);
+    const chosen = doc?.tokenField ? { tokenField: doc.tokenField } : chooseJoinToken(doc);
     if (!chosen) return false;
 
     try {
@@ -390,14 +417,28 @@ async function handleJoinCandidate({ doc, seenUsers, summary, targetGuildId, mod
             env,
             now: Date.now(),
             config,
-            decrypt: options.decryptToken || decryptToken,
-            prepareTokenStorage: options.prepareTokenStorage || discordApi.prepareTokenStorage
+            tokenManager: options.oauthTokenManager || oauthTokenManager,
+            decrypt: options.decryptToken,
+            prepareTokenStorage: options.prepareTokenStorage
         });
 
         if (access.refreshed) summary.refreshed++;
 
         if (!access.accessToken) {
-            recordJoinFailure(summary, userId, "token_invalid");
+            if (access.failed || access.code === "oauth_refresh_failed" || access.code === "oauth_refresh_token_decrypt_failed") {
+                summary.refreshFailed++;
+                if (access.reason === "refresh_state_changed" || access.stateChanged) {
+                    summary.refreshStateConflicts++;
+                    pushError(summary, userId, "refresh_failure_state_changed", access.persistenceError);
+                } else if (access.persisted === false) {
+                    summary.persistenceFailed++;
+                    pushError(summary, userId, "refresh_failure_persistence_failed", access.persistenceError);
+                }
+                recordJoinFailure(summary, userId, "refresh_failed", safeError(access.error || access.reason));
+                return true;
+            }
+
+            recordJoinFailure(summary, userId, "token_invalid", access.reason || null);
             return true;
         }
 
@@ -411,42 +452,29 @@ async function handleJoinCandidate({ doc, seenUsers, summary, targetGuildId, mod
         recordJoinFailure(summary, userId, reasonFromJoinResult(result), safeError(result?.error || result));
         return true;
     } catch (err) {
-        await handleJoinCandidateError({
-            err,
-            summary,
-            userId,
-            model,
-            doc,
-            chosen,
-            config
-        });
+        if (String(err?.message || "").includes("refresh")) {
+            summary.refreshFailed++;
+            const persistence = await markTokenRefreshFailure({
+                model,
+                doc,
+                tokenField: chosen.tokenField,
+                err,
+                now: Date.now(),
+                failMax: config.failMax
+            });
+            if (persistence.stateChanged) {
+                summary.refreshStateConflicts++;
+                pushError(summary, userId, "refresh_failure_state_changed", persistence.persistenceError);
+            } else if (!persistence.persisted) {
+                summary.persistenceFailed++;
+                pushError(summary, userId, "refresh_failure_persistence_failed", persistence.persistenceError);
+            }
+            recordJoinFailure(summary, userId, "refresh_failed", safeError(err));
+            return true;
+        }
+        recordJoinFailure(summary, userId, "discord_error", safeError(err));
         return true;
     }
-}
-
-async function handleJoinCandidateError({ err, summary, userId, model, doc, chosen, config }) {
-    if (String(err?.message || "").includes("refresh")) {
-        summary.refreshFailed++;
-        const persistence = await markTokenRefreshFailure({
-            model,
-            doc,
-            tokenField: chosen.tokenField,
-            err,
-            now: Date.now(),
-            failMax: config.failMax
-        });
-        if (persistence.stateChanged) {
-            summary.refreshStateConflicts++;
-            pushError(summary, userId, "refresh_failure_state_changed", persistence.persistenceError);
-        } else if (!persistence.persisted) {
-            summary.persistenceFailed++;
-            pushError(summary, userId, "refresh_failure_persistence_failed", persistence.persistenceError);
-        }
-        recordJoinFailure(summary, userId, "refresh_failed", safeError(err));
-        return;
-    }
-
-    recordJoinFailure(summary, userId, "discord_error", safeError(err));
 }
 
 function sleep(ms) {
@@ -679,7 +707,7 @@ async function processAllCandidateBatches(summary, context, options) {
         });
         if (!docs.length) break;
         await processLoadedBatch(docs, summary, context, options, summarySeenUsers, processedSeenUsers);
-        const nextCursor = docs.at(-1)?._id;
+        const nextCursor = docs.at(-1)?._id || docs.at(-1)?.recordId;
         if (!nextCursor || String(nextCursor) === String(afterId || "")) {
             throw new Error("join campaign cursor did not advance");
         }

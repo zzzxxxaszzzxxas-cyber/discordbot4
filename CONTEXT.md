@@ -91,6 +91,7 @@ booleans only; detailed diagnostics remain behind Owner authentication.
 | Verification routes | `discord/verification/routes/` |
 | Verification persistence | `discord/verification/models/` |
 | Per-IP identity correlation | `discord/verification/models/IpIdentityLink.js`, `IpIdentity*History.js` |
+| OAuth Token Manager | `discord/core/oauthTokenManager.js` |
 | OAuth/IP/device/crypto helpers | `discord/verification/utils/` |
 | Verification management UI | `discord/verification/page.js`, `guildPage.js`, `ownerStyles.js`, `public/js/guild-dashboard.js` |
 | Public callback UI | `discord/verification/views/callback.html`, `public/css/`, `public/js/callback.js` |

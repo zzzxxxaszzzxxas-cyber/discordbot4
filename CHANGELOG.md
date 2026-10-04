@@ -1,6 +1,19 @@
 # Changelog
 
-## [Unreleased] - 2026-09-30
+## [Unreleased] - 2026-10-04
+
+- **OAuth Token Lifecycle Consolidation (`discord/core/oauthTokenManager.js`):**
+  - Consolidated all fragmented OAuth2 token operations across verification, campaigns, and recovery into a Single Authority: `discord/core/oauthTokenManager.js`.
+  - Replaced legacy `oauthTokenLifecycle.js` with comprehensive token manager managing: authorization code exchange, atomic MongoDB activation storage, AES-256-GCM (`v3:gcm:`) encryption/decryption, transparent near-expiry refresh with per-user deduplication locks (`withTokenRefreshLock`), candidate selection, background refresh sweeps, recovery evaluation, and token revocation.
+  - Refactored `discord/verification/routes/oauth.js` to perform single atomic `commitVerificationActivation` executing snapshot updates and token storage in one atomic MongoDB write.
+  - Refactored `discord/features/joinCampaign.js` to utilize `getUsableAccessToken` and candidate streaming without direct token crypto exposure.
+  - Refactored `discord/verification/ownerService.js` to retrieve raw token states via `oauthTokenManager.getOwnerTokenState()` in strict compliance with Owner Intent Policy (OI-03), eliminating direct token decryption from `ownerService.js`.
+  - Refactored `discord/verification/services/encryptionMigration.js` to route `oauth_tokens` crypto operations exclusively through `oauthTokenManager`.
+  - Integrated `oauthTokenManager` into `discord/verification/lifecycle.js` with background timers and safety-net maintenance sweeps.
+  - Retired and deleted `discord/verification/utils/oauthTokenLifecycle.js`.
+  - Updated coverage thresholds in `scripts/checkCoverageThresholds.js` tracking `oauthTokenManager.js` (>85% line coverage achieved).
+  - Maintained strict isolation for Voice and Quest subsystems (`discord/core/tokenCoordinator.js` untouched).
+
 
 - **UI/UX Renovation — Cleanup & Polish Pass (all 9 guild commands):**
   - `/token-check`: Expanded batch embed display from 15 → 20 tokens (full coverage, no hidden results). Removed raw token file attachment (`createCategoryAttachments` dead code). Added `resolveInvalidTokenErrorMessage()` mapping error codes to Thai user-facing strings; replaced `result.errorMessage` direct exposure. Removed `.setFooter()` from all embed branches. Error emoji updated to `no_entry` for consistency.
