@@ -21,6 +21,15 @@ const REQUIRED_USER_SCOPES = Object.freeze([
 ]);
 const TOKEN_FIELDS = Object.freeze(["oauth", "adminOAuth"]);
 
+function assertValidTokenField(tokenField) {
+    if (!tokenField || typeof tokenField !== "string" || !TOKEN_FIELDS.includes(tokenField)) {
+        const error = new Error(`Invalid tokenField "${tokenField}". Allowed values: ${TOKEN_FIELDS.join(", ")}`);
+        error.code = "oauth_invalid_token_field";
+        throw error;
+    }
+    return tokenField;
+}
+
 const refreshLocks = new Map();
 
 let backgroundTimer = null;
@@ -179,6 +188,7 @@ async function commitVerificationActivation({
         throw error;
     }
 
+    assertValidTokenField(tokenField);
     validateTokenData(tokenData);
 
     const lockKey = `${profileUserId}:${tokenField}`;
@@ -190,8 +200,11 @@ async function commitVerificationActivation({
                 currentDoc = typeof query?.select === "function"
                     ? await query.select(`${tokenField}.version`).lean()
                     : await query;
-            } catch {
-                currentDoc = null;
+            } catch (err) {
+                const readError = new Error(`Failed to read current OAuthUser state before activation: ${err.message}`);
+                readError.code = "activation_read_failed";
+                readError.cause = err;
+                throw readError;
             }
         }
 
@@ -349,6 +362,7 @@ async function performTokenRefreshUnderLock({
     force = false,
     marginMs = DEFAULT_ON_DEMAND_MARGIN_MS
 }) {
+    assertValidTokenField(tokenField);
     const lockUserId = doc.discord?.userId || String(doc._id);
     const fresh = await readFreshOAuthDocument(model, doc, tokenField);
     if (!fresh) return conflictOutcome(tokenField, lockUserId, "document_missing");
@@ -468,6 +482,8 @@ async function getAccessToken({
         error.code = "oauth_user_id_required";
         throw error;
     }
+
+    assertValidTokenField(tokenField);
 
     const doc = await model.findOne({
         "discord.userId": String(userId),
@@ -600,6 +616,7 @@ async function refreshTokenField({
     config,
     discordApiInstance
 }) {
+    assertValidTokenField(tokenField);
     const query = buildRefreshQuery(now, config.marginMs, config.failMax, tokenField);
     const docs = await model.find(query)
         .sort({ [tokenPath(tokenField, "expiresAt")]: 1, updatedAt: 1 })
@@ -709,6 +726,7 @@ async function refreshDueTokens(options = {}) {
 
 async function listAccessTokenCandidates({
     requiredScopes = ["guilds.join"],
+    targetGuildId = null,
     limit = 500,
     afterId = null,
     model = OAuthUser,
@@ -725,21 +743,27 @@ async function listAccessTokenCandidates({
         ]
     }));
 
-    const baseFilter = {
-        $and: [
-            {
-                $or: [
-                    { deletedAt: { $exists: false } },
-                    { deletedAt: null }
-                ]
-            },
-            { $or: tokenBranches }
-        ]
-    };
+    const andConditions = [
+        {
+            $or: [
+                { deletedAt: { $exists: false } },
+                { deletedAt: null }
+            ]
+        },
+        { $or: tokenBranches }
+    ];
 
-    const filter = afterId ? { $and: [baseFilter, { _id: { $gt: afterId } }] } : baseFilter;
+    if (targetGuildId) {
+        andConditions.push({ "lastVerify.guildId": String(targetGuildId) });
+    }
+
+    if (afterId) {
+        andConditions.push({ _id: { $gt: afterId } });
+    }
+
+    const filter = { $and: andConditions };
     const docs = await model.find(filter)
-        .select("discord.userId oauth adminOAuth updatedAt _id")
+        .select("discord.userId oauth adminOAuth lastVerify updatedAt _id")
         .sort({ _id: 1 })
         .limit(limit)
         .lean();
@@ -756,6 +780,9 @@ async function listAccessTokenCandidates({
     const byTokenField = { oauth: 0, adminOAuth: 0 };
 
     for (const doc of docs) {
+        if (targetGuildId && doc.lastVerify?.guildId && String(doc.lastVerify.guildId) !== String(targetGuildId)) {
+            continue;
+        }
         const userId = String(doc.discord?.userId || "").trim();
         if (!userId) {
             missingUserId++;
@@ -813,7 +840,8 @@ async function listAccessTokenCandidates({
                 userId,
                 tokenField: chosenField,
                 scope: chosenScope,
-                recordId: doc._id
+                recordId: doc._id,
+                ...(doc.lastVerify ? { lastVerify: { guildId: doc.lastVerify.guildId } } : {})
             });
         } else if (docHasMissingScope) {
             missingScope++;
@@ -879,6 +907,9 @@ async function getOwnerTokenState(userId, { model = OAuthUser, tokenFields = TOK
         throw error;
     }
 
+    const fields = Array.isArray(tokenFields) ? tokenFields : [tokenFields];
+    for (const f of fields) assertValidTokenField(f);
+
     const filter = { "discord.userId": String(userId) };
     if (!includeDeleted) {
         filter.$or = [
@@ -888,11 +919,11 @@ async function getOwnerTokenState(userId, { model = OAuthUser, tokenFields = TOK
     }
 
     const doc = await model.findOne(filter)
-        .select(`discord.userId ${tokenFields.join(" ")}`)
+        .select(`discord.userId ${fields.join(" ")}`)
         .lean();
 
     const result = {};
-    for (const field of tokenFields) {
+    for (const field of fields) {
         result[field] = revealTokenStateForOwner(doc?.[field] || {});
     }
     return result;
@@ -920,6 +951,9 @@ async function getOwnerTokenMetadata(userId, { model = OAuthUser, tokenFields = 
     if (!userId) {
         return { oauth: null, adminOAuth: null };
     }
+
+    const fields = Array.isArray(tokenFields) ? tokenFields : [tokenFields];
+    for (const f of fields) assertValidTokenField(f);
 
     const filter = { "discord.userId": String(userId) };
     if (!includeDeleted) {
@@ -997,6 +1031,7 @@ async function getRecoveryStatuses(userIds, {
     failMax = DEFAULT_REFRESH_FAIL_MAX,
     includeDeleted = false
 } = {}) {
+    assertValidTokenField(tokenField);
     if (!Array.isArray(userIds) || userIds.length === 0) {
         return new Map();
     }
@@ -1189,6 +1224,8 @@ async function revokeToken({
         error.code = "oauth_user_id_required";
         throw error;
     }
+
+    assertValidTokenField(tokenField);
 
     const lockKey = `${userId}:${tokenField}`;
     return withTokenRefreshLock(lockKey, async () => {
@@ -1400,6 +1437,7 @@ module.exports = {
     getDiagnostics,
 
     _test: {
+        assertValidTokenField,
         validateTokenData,
         tokenPath,
         versionCondition,

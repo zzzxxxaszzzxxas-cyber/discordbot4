@@ -1344,3 +1344,107 @@ test("joinCampaign: processAllCandidateBatches merges true page.statistics into 
   expect(summary.missingUserId).toBe(9);
   expect(summary.joined).toBe(1);
 });
+
+test("oauthTokenManager: commitVerificationActivation aborts with activation_read_failed on DB read error and never writes", async () => {
+  const model = {
+    findOne: jest.fn(() => ({
+      select: () => ({
+        lean: () => Promise.reject(new Error("Mongo network error"))
+      })
+    })),
+    findOneAndUpdate: jest.fn()
+  };
+
+  await expect(manager.commitVerificationActivation({
+    profileUserId: "user-read-fail",
+    tokenData: {
+      access_token: "test-access",
+      refresh_token: "test-refresh",
+      expires_in: 3600,
+      scope: "identify guilds.join"
+    },
+    updateSet: {},
+    safeAttemptStartedAt: 1000,
+    model,
+    now: 2000
+  })).rejects.toMatchObject({
+    code: "activation_read_failed"
+  });
+
+  expect(model.findOneAndUpdate).not.toHaveBeenCalled();
+});
+
+test("oauthTokenManager: assertValidTokenField rejects invalid tokenField values across all Manager APIs", async () => {
+  const invalidFields = ["invalidField", "userTokens", "tokens", "", "   ", null, undefined, 123, "oauth; DROP TABLE"];
+  for (const field of invalidFields) {
+    expect(() => manager._test.assertValidTokenField(field)).toThrow();
+
+    await expect(manager.commitVerificationActivation({
+      profileUserId: "u1",
+      tokenField: field,
+      tokenData: { access_token: "a", refresh_token: "r", expires_in: 3600 }
+    })).rejects.toThrow();
+
+    await expect(manager.getAccessToken({
+      userId: "u1",
+      tokenField: field
+    })).rejects.toThrow();
+
+    await expect(manager.revokeToken({
+      userId: "u1",
+      tokenField: field
+    })).rejects.toThrow();
+
+    await expect(manager._test.refreshTokenField({
+      doc: { _id: "1", discord: { userId: "u1" } },
+      tokenField: field
+    })).rejects.toThrow();
+
+    await expect(manager.getOwnerTokenState("u1", { tokenFields: [field] })).rejects.toThrow();
+    await expect(manager.getOwnerTokenMetadata("u1", { tokenFields: [field] })).rejects.toThrow();
+    await expect(manager.getRecoveryStatuses(["u1"], { tokenField: field })).rejects.toThrow();
+  }
+});
+
+test("oauthTokenManager: listAccessTokenCandidates enforces targetGuildId consent filtering and preserves cursor at end of $and", async () => {
+  const encRefresh = encryptToken("valid-refresh");
+  const docs = [
+    {
+      _id: "doc-target-1",
+      discord: { userId: "user-target-1" },
+      oauth: { encryptedRefreshToken: encRefresh, scope: "identify guilds.join", revokedAt: null },
+      lastVerify: { guildId: "target-guild-123" }
+    },
+    {
+      _id: "doc-target-2",
+      discord: { userId: "user-target-2" },
+      oauth: { encryptedRefreshToken: encRefresh, scope: "identify guilds.join", revokedAt: null },
+      lastVerify: { guildId: "different-guild-456" }
+    }
+  ];
+
+  let capturedFilter = null;
+  const model = {
+    find: jest.fn((filter) => {
+      capturedFilter = filter;
+      return scanQuery(docs);
+    })
+  };
+
+  const page = await manager.listAccessTokenCandidates({
+    requiredScopes: ["guilds.join"],
+    targetGuildId: "target-guild-123",
+    afterId: "doc-target-0",
+    model
+  });
+
+  const andClauses = capturedFilter.$and;
+  expect(Array.isArray(andClauses)).toBe(true);
+  expect(andClauses.some(clause => clause["lastVerify.guildId"] === "target-guild-123")).toBe(true);
+  expect(andClauses.at(-1)).toEqual({ _id: { $gt: "doc-target-0" } });
+
+  expect(page.candidates.length).toBe(1);
+  expect(page.candidates[0].userId).toBe("user-target-1");
+  expect(page.candidates[0].lastVerify).toEqual({ guildId: "target-guild-123" });
+});
+

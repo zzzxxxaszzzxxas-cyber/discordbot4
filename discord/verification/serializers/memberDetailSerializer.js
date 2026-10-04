@@ -16,10 +16,10 @@ function tokenStatus(token = {}) {
     return {
         hasAccessToken: typeof token.hasAccessToken === "boolean"
             ? token.hasAccessToken
-            : Boolean(token.hasToken || token.accessToken || token.encryptedAccessToken),
+            : Boolean(token.hasToken || token.accessToken),
         hasRefreshToken: typeof token.hasRefreshToken === "boolean"
             ? token.hasRefreshToken
-            : Boolean(token.hasRefreshToken || token.refreshToken || token.encryptedRefreshToken),
+            : Boolean(token.hasRefreshToken || token.refreshToken),
         scope: token.scope || "",
         tokenType: token.tokenType || "",
         issuedAt,

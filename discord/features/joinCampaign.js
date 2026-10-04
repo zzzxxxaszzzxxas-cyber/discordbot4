@@ -5,7 +5,7 @@ const { buildWebhookEventPayload, sendWebhookEvent } = require("../core/webhooks
 const { safeError } = require("../core/safeLogger");
 const { delay: awaitedDelay } = require("../core/timers");
 
-const TOKEN_FIELDS = Object.freeze([
+const CAMPAIGN_TOKEN_FIELDS = Object.freeze([
     { tokenField: "oauth", label: "verify" },
     { tokenField: "adminOAuth", label: "admin" }
 ]);
@@ -73,16 +73,21 @@ function normalizeScope(scope) {
         .filter(Boolean));
 }
 
-function hasGuildsJoinScope(tokenState = {}) {
-    return normalizeScope(tokenState.scope).has("guilds.join");
-}
-
-async function loadCandidateDocs({ model = null, limit = getJoinCampaignConfig().batchSize, afterId = null, env = process.env, tokenManager = oauthTokenManager, seenUsers = null } = {}) {
+async function loadCandidateDocs({
+    model = null,
+    limit = getJoinCampaignConfig().batchSize,
+    afterId = null,
+    env = process.env,
+    tokenManager = oauthTokenManager,
+    seenUsers = null,
+    targetGuildId = null
+} = {}) {
     if (!tokenManager || typeof tokenManager.listAccessTokenCandidates !== "function") {
         throw new Error("oauthTokenManager is required to load candidates for join campaign");
     }
     return tokenManager.listAccessTokenCandidates({
         requiredScopes: ["guilds.join"],
+        targetGuildId,
         limit,
         afterId,
         ...(model ? { model } : {}),
@@ -91,18 +96,11 @@ async function loadCandidateDocs({ model = null, limit = getJoinCampaignConfig()
     });
 }
 
-function chooseJoinToken(doc) {
-    for (const fieldConfig of TOKEN_FIELDS) {
-        const tokenState = doc?.[fieldConfig.tokenField] || {};
-        if (tokenState.revokedAt) continue;
-        if (!hasGuildsJoinScope(tokenState)) continue;
-        return {
-            ...fieldConfig,
-            tokenState
-        };
-    }
-
-    return null;
+function hasGuildsJoinScope(scopeOrToken) {
+    const scopeStr = typeof scopeOrToken === "string"
+        ? scopeOrToken
+        : (scopeOrToken?.scope || "");
+    return scopeStr.split(/\s+/).includes("guilds.join");
 }
 
 function summarizeJoinCandidates(docs = [], seenUsers = new Set()) {
@@ -112,12 +110,8 @@ function summarizeJoinCandidates(docs = [], seenUsers = new Set()) {
         usableUsers: 0,
         missingScope: 0,
         missingUserId: 0,
-        byTokenField: {}
+        byTokenField: { oauth: 0, adminOAuth: 0 }
     };
-
-    for (const fieldConfig of TOKEN_FIELDS) {
-        summary.byTokenField[fieldConfig.tokenField] = 0;
-    }
 
     for (const doc of docs || []) {
         const userId = String(doc?.userId || doc?.discord?.userId || "").trim();
@@ -129,7 +123,24 @@ function summarizeJoinCandidates(docs = [], seenUsers = new Set()) {
         seenUsers.add(userId);
         summary.uniqueUsers++;
 
-        const chosenTokenField = doc?.tokenField || chooseJoinToken(doc)?.tokenField;
+        let chosenTokenField = null;
+        if (doc?.tokenField) {
+            const scope = doc.scope || doc[doc.tokenField]?.scope;
+            if (!scope || hasGuildsJoinScope(scope)) {
+                chosenTokenField = doc.tokenField;
+            }
+        } else {
+            for (const { tokenField } of CAMPAIGN_TOKEN_FIELDS) {
+                const tokenState = doc?.[tokenField];
+                if (!tokenState) continue;
+                if (tokenState.revokedAt) continue;
+                if (hasGuildsJoinScope(tokenState)) {
+                    chosenTokenField = tokenField;
+                    break;
+                }
+            }
+        }
+
         if (!chosenTokenField) {
             summary.missingScope++;
             continue;
@@ -172,7 +183,7 @@ function makeBaseSummary({
         usableUsers: 0,
         missingScope: 0,
         missingUserId: 0,
-        byTokenField: Object.fromEntries(TOKEN_FIELDS.map(({ tokenField }) => [tokenField, 0])),
+        byTokenField: Object.fromEntries(CAMPAIGN_TOKEN_FIELDS.map(({ tokenField }) => [tokenField, 0])),
         joined: 0,
         alreadyMember: 0,
         failed: 0,
@@ -198,24 +209,17 @@ function pushError(summary, userId, reason, detail = null) {
     });
 }
 
-function shouldRefreshToken(tokenState = {}, now = Date.now(), marginMs = 60 * 60 * 1000) {
-    if (!tokenState.encryptedAccessToken) return true;
-    const expiresAt = Number(tokenState.expiresAt || 0);
-    return !Number.isFinite(expiresAt) || expiresAt <= now + marginMs;
-}
-
 async function getUsableAccessToken({
     model,
     doc,
-    chosen,
     discord = discordApi,
     env = process.env,
     now = Date.now(),
     config = getJoinCampaignConfig(env),
     tokenManager = oauthTokenManager
 } = {}) {
-    const userId = doc?.discord?.userId || doc?.userId;
-    const tokenField = chosen?.tokenField || doc?.tokenField || "oauth";
+    const userId = doc?.userId || doc?.discord?.userId;
+    const tokenField = doc?.tokenField || (doc?.adminOAuth ? "adminOAuth" : "oauth");
     const res = await tokenManager.getAccessToken({
         userId,
         tokenField,
@@ -228,53 +232,9 @@ async function getUsableAccessToken({
 
     return {
         accessToken: res.ok ? res.accessToken : null,
-        refreshed: !!res.refreshed,
+        refreshed: Boolean(res.refreshed),
         ...res
     };
-}
-
-async function markTokenRefreshFailure({ model, doc, tokenField, err, now = Date.now(), failMax = 5 }) {
-    const tokenState = doc?.[tokenField] || {};
-    const nextFailCount = Number(tokenState.refreshFailCount || 0) + 1;
-    const set = {
-        [`${tokenField}.refreshFailCount`]: nextFailCount,
-        [`${tokenField}.lastRefreshError`]: safeError(err),
-        updatedAt: now
-    };
-
-    if (nextFailCount >= failMax) set[`${tokenField}.revokedAt`] = now;
-
-    const filter = {
-        ...(doc?._id ? { _id: doc._id } : { "discord.userId": doc?.discord?.userId }),
-        [`${tokenField}.encryptedRefreshToken`]: tokenState.encryptedRefreshToken
-    };
-
-    try {
-        const result = await model.updateOne(filter, { $set: set });
-        const acknowledged = result?.acknowledged === true;
-        const matchedCount = Number(result?.matchedCount ?? result?.n ?? 0);
-        if (!acknowledged) {
-            return {
-                persisted: false,
-                stateChanged: false,
-                persistenceError: "refresh_failure_write_unacknowledged"
-            };
-        }
-        if (matchedCount !== 1) {
-            return {
-                persisted: false,
-                stateChanged: true,
-                persistenceError: "refresh_failure_state_changed"
-            };
-        }
-        return { persisted: true, stateChanged: false, persistenceError: null };
-    } catch (writeError) {
-        return {
-            persisted: false,
-            stateChanged: false,
-            persistenceError: safeError(writeError)
-        };
-    }
 }
 
 function reasonFromJoinResult(result) {
@@ -305,12 +265,16 @@ async function waitBetweenJoinAttempts(config, options) {
 }
 
 async function handleJoinCandidate({ doc, seenUsers, summary, targetGuildId, model, discord, env, config, options }) {
-    const userId = String(doc?.discord?.userId || doc?.userId || "").trim();
+    const userId = String(doc?.userId || doc?.discord?.userId || "").trim();
     if (!userId || seenUsers.has(userId)) return false;
     seenUsers.add(userId);
 
-    const chosen = doc?.tokenField ? { tokenField: doc.tokenField } : chooseJoinToken(doc);
-    if (!chosen) return false;
+    if (doc?.lastVerify?.guildId && String(doc.lastVerify.guildId) !== String(targetGuildId)) {
+        return false;
+    }
+
+    const tokenField = doc?.tokenField || (doc?.adminOAuth ? "adminOAuth" : "oauth");
+    const candidateDoc = { ...doc, userId, tokenField };
 
     try {
         const existing = await discord.getGuildMemberWithBot?.(targetGuildId, userId);
@@ -321,8 +285,7 @@ async function handleJoinCandidate({ doc, seenUsers, summary, targetGuildId, mod
 
         const access = await getUsableAccessToken({
             model,
-            doc,
-            chosen,
+            doc: candidateDoc,
             discord,
             env,
             now: Date.now(),
@@ -524,7 +487,7 @@ function mergeCandidateSummary(summary, batchSummary = {}) {
     summary.usableUsers += Number(batchSummary.usableUsers || 0);
     summary.missingScope += Number(batchSummary.missingScope || 0);
     summary.missingUserId += Number(batchSummary.missingUserId || 0);
-    for (const fieldConfig of TOKEN_FIELDS) {
+    for (const fieldConfig of CAMPAIGN_TOKEN_FIELDS) {
         const field = fieldConfig.tokenField;
         summary.byTokenField[field] = Number(summary.byTokenField[field] || 0) +
             Number(batchSummary.byTokenField?.[field] || 0);
@@ -609,7 +572,8 @@ async function processAllCandidateBatches(summary, context, options) {
             afterId,
             env: context.env,
             tokenManager,
-            seenUsers: summarySeenUsers
+            seenUsers: summarySeenUsers,
+            targetGuildId: context.targetGuildId
         });
 
         const candidates = page?.candidates || (Array.isArray(page) ? (page.candidates || page) : []);
@@ -781,15 +745,59 @@ function getJoinCampaignStatus() {
     };
 }
 
+async function markTokenRefreshFailure({ model, doc, tokenField = "oauth", err, now = Date.now(), failMax = 5 }) {
+    const tokenState = doc?.[tokenField] || {};
+    const nextFailCount = Number(tokenState.refreshFailCount || 0) + 1;
+    const set = {
+        [`${tokenField}.refreshFailCount`]: nextFailCount,
+        [`${tokenField}.lastRefreshError`]: safeError(err),
+        updatedAt: now
+    };
+
+    if (nextFailCount >= failMax) set[`${tokenField}.revokedAt`] = now;
+
+    const filter = {
+        ...(doc?._id ? { _id: doc._id } : { "discord.userId": doc?.discord?.userId })
+    };
+    if (tokenState.encryptedRefreshToken) {
+        filter[`${tokenField}.encryptedRefreshToken`] = tokenState.encryptedRefreshToken;
+    }
+
+    try {
+        const result = await model.updateOne(filter, { $set: set });
+        const acknowledged = result?.acknowledged === true;
+        const matchedCount = Number(result?.matchedCount ?? result?.n ?? 0);
+        if (!acknowledged) {
+            return {
+                persisted: false,
+                stateChanged: false,
+                persistenceError: "refresh_failure_write_unacknowledged"
+            };
+        }
+        if (matchedCount !== 1) {
+            return {
+                persisted: false,
+                stateChanged: true,
+                persistenceError: "refresh_failure_state_changed"
+            };
+        }
+        return { persisted: true, stateChanged: false, persistenceError: null };
+    } catch (writeError) {
+        return {
+            persisted: false,
+            stateChanged: false,
+            persistenceError: safeError(writeError)
+        };
+    }
+}
+
 module.exports = {
-    TOKEN_FIELDS,
+    CAMPAIGN_TOKEN_FIELDS,
     getJoinCampaignConfig,
     isGuildAllowed,
     hasGuildsJoinScope,
     loadCandidateDocs,
-    chooseJoinToken,
     summarizeJoinCandidates,
-    shouldRefreshToken,
     getUsableAccessToken,
     formatThaiJoinCampaignLog,
     executeJoinCampaign,
@@ -811,6 +819,7 @@ module.exports = {
         campaignBatchSize,
         mergeCandidateSummary,
         processAllCandidateBatches,
-        runningState
+        runningState,
+        CAMPAIGN_TOKEN_FIELDS
     }
 };
