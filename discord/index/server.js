@@ -398,6 +398,12 @@ function registerRoutes({
 
     const shadowPortal = registerShadowPortal({ setupTelemetryRouter, app, client });
 
+    app.use((err, req, res, next) => {
+        console.error(`[HTTP] ❌ ${req.method} ${req.path} failed: ${err.message}`);
+        if (res.headersSent) return next(err);
+        return res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: "An unexpected error occurred" });
+    });
+
     const pinAttemptCleanupTimer = setInterval(() => {
         cleanupPinAttempts();
     }, 5 * 60 * 1000);

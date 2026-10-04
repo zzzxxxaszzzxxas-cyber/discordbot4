@@ -100,10 +100,11 @@ function initLogCapture(maxLogs = MAX_LOGS_DEFAULT) {
         else if (rawTag.includes("SECURITY") || rawTag.includes("PROTECTION") || rawTag.includes("RAID") || rawTag.includes("SPAM")) category = "SECURITY";
         else if (rawTag.includes("QUEST")) category = "QUEST";
         else if (rawTag.includes("MODCASE")) category = "MODERATION";
+        else if (rawTag.includes("HTTP") || rawTag.includes("API") || rawTag.includes("ROUTE")) category = "RUNTIME";
         else if (rawTag.includes("CRITICAL") || rawTag.includes("FATAL")) category = "SYSTEM";
 
         // Clean message text for dedupe key and embed
-        const cleanMsg = line.replace(/^\[(?:BOT|GATEWAY|DATABASE|WORKER|SESSION|SLASH|SECURITY|VERIFY|QUEST|PROTECTION|RUNTIME|AUTODEAF|NATURAL|HEARTBEAT|MODCASE|ROLE_BTN)[^\]]*\]\s*/i, "").trim();
+        const cleanMsg = line.replace(/^\[(?:BOT|GATEWAY|DATABASE|WORKER|SESSION|SLASH|SECURITY|VERIFY|QUEST|PROTECTION|RUNTIME|AUTODEAF|NATURAL|HEARTBEAT|MODCASE|ROLE_BTN|HTTP|API)[^\]]*\]\s*/i, "").trim();
 
         // Fingerprint for deduplication
         const fingerprint = `${level}:${category}:${cleanMsg.slice(0, 120)}`;
