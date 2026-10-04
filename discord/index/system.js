@@ -214,21 +214,35 @@ function isTransientGatewayError(err) {
     const msg = String(err?.message || "");
     const code = String(err?.code || "");
     const stack = String(err?.stack || "");
+    const causeCode = String(err?.cause?.code || "");
+    const causeMsg = String(err?.cause?.message || "");
 
     // 1. Cloudflare / Discord gateway HTTP response errors on WebSocket handshake
-    if (/Unexpected server response:\s*(?:520|521|522|523|524|525|502|503|504)/i.test(msg)) {
+    if (/Unexpected server response:\s*(?:520|521|522|523|524|525|502|503|504)/i.test(msg) ||
+        /Unexpected server response:\s*(?:520|521|522|523|524|525|502|503|504)/i.test(causeMsg)) {
         return true;
     }
 
     // 2. Common transient socket/DNS blips on gateway connection
-    if (["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED"].includes(code)) {
-        if (/websocket|gateway|discord/i.test(stack) || /websocket|gateway|discord/i.test(msg)) {
+    const transientCodes = [
+        "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED",
+        "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "ERR_STREAM_PREMATURE_CLOSE"
+    ];
+    if (transientCodes.includes(code) || transientCodes.includes(causeCode)) {
+        if (/websocket|gateway|discord/i.test(stack) || /websocket|gateway|discord/i.test(msg) || /websocket|gateway|discord/i.test(causeMsg)) {
             return true;
         }
     }
 
-    // 3. WS handshake timeout or connection abort
-    if (/Opening handshake has timed out|WebSocket was closed before the connection was established/i.test(msg)) {
+    // 3. WS handshake timeout or connection abort or premature close
+    if (/Opening handshake has timed out|WebSocket was closed before the connection was established|Connection reset by peer|premature close/i.test(msg) ||
+        /Opening handshake has timed out|WebSocket was closed before the connection was established|Connection reset by peer|premature close/i.test(causeMsg)) {
+        return true;
+    }
+
+    // 4. Discord REST 5xx transient server outages (DiscordAPIError 500, 502, 503, 504, 520-525)
+    if (/DiscordAPIError.*(?:500|502|503|504|520|521|522|523|524|525)/i.test(msg) ||
+        /DiscordAPIError.*(?:500|502|503|504|520|521|522|523|524|525)/i.test(causeMsg)) {
         return true;
     }
 

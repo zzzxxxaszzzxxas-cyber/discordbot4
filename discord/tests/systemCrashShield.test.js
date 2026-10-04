@@ -161,6 +161,26 @@ test("isTransientGatewayError identifies Cloudflare and Discord gateway transien
     timedOutErr.code = "ETIMEDOUT";
     assert.equal(isTransientGatewayError(timedOutErr), true);
 
+    // Cause-based network errors (e.g. Node 18+ undici fetch failed)
+    const causeErr = new Error("fetch failed");
+    causeErr.cause = { code: "UND_ERR_CONNECT_TIMEOUT", message: "Connect Timeout Error" };
+    causeErr.stack = "Error: fetch failed at discord.com/api/v10";
+    assert.equal(isTransientGatewayError(causeErr), true);
+
+    const resetCauseErr = new Error("fetch failed");
+    resetCauseErr.cause = { code: "ECONNRESET", message: "other side closed" };
+    resetCauseErr.stack = "Error: fetch failed at gateway.discord.gg";
+    assert.equal(isTransientGatewayError(resetCauseErr), true);
+
+    // Discord REST 5xx transient outages
+    assert.equal(isTransientGatewayError(new Error("DiscordAPIError[500]: Internal Server Error")), true);
+    assert.equal(isTransientGatewayError(new Error("DiscordAPIError[502]: Bad Gateway")), true);
+    assert.equal(isTransientGatewayError(new Error("DiscordAPIError[503]: Service Unavailable")), true);
+
+    // Stream / socket premature close
+    assert.equal(isTransientGatewayError(new Error("Connection reset by peer")), true);
+    assert.equal(isTransientGatewayError(new Error("ERR_STREAM_PREMATURE_CLOSE: premature close")), true);
+
     // Non-transient normal errors must NOT be ignored
     assert.equal(isTransientGatewayError(new Error("TypeError: Cannot read properties of undefined")), false);
     assert.equal(isTransientGatewayError(new Error("MongoDB connection failed")), false);
