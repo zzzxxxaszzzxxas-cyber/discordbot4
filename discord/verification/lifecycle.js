@@ -414,6 +414,9 @@ function getVerificationDiagnostics() {
             lastRunAt: lastOAuthRefreshAt,
             lastError: lastOAuthRefreshError,
             lastSummary: lastOAuthRefreshSummary,
+            lastRunStatus: lastOAuthRefreshError ? "error" : (lastOAuthRefreshSummary?.failed > 0 || lastOAuthRefreshSummary?.persistenceFailed > 0 ? "partial_failure" : "ok"),
+            lastRunFailedCount: Number(lastOAuthRefreshSummary?.failed || 0),
+            lastRunPersistenceFailed: Number(lastOAuthRefreshSummary?.persistenceFailed || 0),
             diagnostics: oauthTokenManager.getDiagnostics()
         }
     };

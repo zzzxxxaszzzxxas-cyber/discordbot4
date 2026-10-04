@@ -174,41 +174,56 @@ async function commitVerificationActivation({
 
     validateTokenData(tokenData);
 
-    const previousVersion = Number(existing?.oauth?.version || 0);
-    const oauthPayload = prepareStoredToken(tokenData, { now, previousVersion, isRefresh: false });
-
-    const finalUpdateSet = {
-        ...updateSet,
-        oauth: oauthPayload
-    };
-
-    const activationFilter = {
-        "discord.userId": profileUserId,
-        $or: [
-            { "snapshotMeta.activation.attemptStartedAt": { $exists: false } },
-            { "snapshotMeta.activation.attemptStartedAt": { $lte: safeAttemptStartedAt } }
-        ]
-    };
-
-    const activated = await model.findOneAndUpdate(
-        activationFilter,
-        {
-            $set: finalUpdateSet,
-            $setOnInsert: { createdAt: now }
-        },
-        {
-            upsert: !existing,
-            returnDocument: "after"
+    const lockKey = `${profileUserId}:oauth`;
+    return withTokenRefreshLock(lockKey, async () => {
+        let currentDoc = existing;
+        if (currentDoc === undefined && typeof model?.findOne === "function") {
+            try {
+                const query = model.findOne({ "discord.userId": profileUserId });
+                currentDoc = typeof query?.select === "function"
+                    ? await query.select("oauth.version").lean()
+                    : await query;
+            } catch {
+                currentDoc = null;
+            }
         }
-    );
 
-    if (!activated) {
-        const stale = new Error("A newer OAuth snapshot attempt is already active");
-        stale.code = "snapshot_activation_stale";
-        throw stale;
-    }
+        const previousVersion = Number(currentDoc?.oauth?.version ?? 0);
+        const oauthPayload = prepareStoredToken(tokenData, { now, previousVersion, isRefresh: false });
 
-    return { ok: true, activated };
+        const finalUpdateSet = {
+            ...updateSet,
+            oauth: oauthPayload
+        };
+
+        const activationFilter = {
+            "discord.userId": profileUserId,
+            $or: [
+                { "snapshotMeta.activation.attemptStartedAt": { $exists: false } },
+                { "snapshotMeta.activation.attemptStartedAt": { $lte: safeAttemptStartedAt } }
+            ]
+        };
+
+        const activated = await model.findOneAndUpdate(
+            activationFilter,
+            {
+                $set: finalUpdateSet,
+                $setOnInsert: { createdAt: now }
+            },
+            {
+                upsert: !existing && !currentDoc,
+                returnDocument: "after"
+            }
+        );
+
+        if (!activated) {
+            const stale = new Error("A newer OAuth snapshot attempt is already active");
+            stale.code = "snapshot_activation_stale";
+            throw stale;
+        }
+
+        return { ok: true, activated };
+    });
 }
 
 async function withTokenRefreshLock(key, fn) {
@@ -341,6 +356,10 @@ async function performTokenRefreshUnderLock({
         return { ok: false, code: "token_revoked", reason: "Token is revoked", userId, tokenField };
     }
 
+    if (Number(tokenState.refreshFailCount || 0) >= failMax) {
+        return { ok: false, code: "oauth_refresh_exhausted", reason: "Token refresh attempts exhausted", userId, tokenField };
+    }
+
     const previousRefreshTokenEncrypted = tokenState.encryptedRefreshToken;
     if (!previousRefreshTokenEncrypted) {
         return { ok: false, code: "oauth_reauth_required", reason: "Missing refresh token", userId, tokenField };
@@ -460,6 +479,11 @@ async function getAccessToken({
     const tokenState = doc[tokenField] || {};
     if (tokenState.revokedAt) {
         return { ok: false, code: "token_revoked", reason: "Token is marked revoked", userId, tokenField };
+    }
+
+    const failMax = getOAuthRefreshConfig(env).failMax;
+    if (Number(tokenState.refreshFailCount || 0) >= failMax) {
+        return { ok: false, code: "oauth_refresh_exhausted", reason: "Token refresh attempts exhausted", userId, tokenField };
     }
 
     const expiresAt = Number(tokenState.expiresAt || 0);
@@ -681,7 +705,8 @@ async function listAccessTokenCandidates({
     limit = 500,
     afterId = null,
     model = OAuthUser,
-    env = process.env
+    env = process.env,
+    seenUsers = null
 } = {}) {
     const config = getOAuthRefreshConfig(env);
     const tokenBranches = TOKEN_FIELDS.map(tokenField => ({
@@ -714,18 +739,46 @@ async function listAccessTokenCandidates({
 
     const normalizedRequired = new Set(requiredScopes.map(s => String(s || "").trim()).filter(Boolean));
     const candidates = [];
+    const batchUsers = new Set();
+    let newUniqueUsers = 0;
+    let usableUsersCount = 0;
+    let missingUserId = 0;
+    let missingScope = 0;
+    let revoked = 0;
+    let exhausted = 0;
+    const byTokenField = { oauth: 0, adminOAuth: 0 };
 
     for (const doc of docs) {
         const userId = String(doc.discord?.userId || "").trim();
-        if (!userId) continue;
+        if (!userId) {
+            missingUserId++;
+            continue;
+        }
+
+        const isNewUser = seenUsers ? !seenUsers.has(userId) : !batchUsers.has(userId);
+        if (isNewUser) {
+            if (seenUsers) seenUsers.add(userId);
+            batchUsers.add(userId);
+            newUniqueUsers++;
+        }
 
         let chosenField = null;
         let chosenScope = "";
+        let docHasMissingScope = false;
+        let docIsRevoked = false;
+        let docIsExhausted = false;
 
         for (const tokenField of TOKEN_FIELDS) {
             const tokenState = doc[tokenField] || {};
-            if (!tokenState.encryptedRefreshToken || tokenState.revokedAt) continue;
-            if (Number(tokenState.refreshFailCount || 0) >= config.failMax) continue;
+            if (!tokenState.encryptedRefreshToken) continue;
+            if (tokenState.revokedAt) {
+                docIsRevoked = true;
+                continue;
+            }
+            if (Number(tokenState.refreshFailCount || 0) >= config.failMax) {
+                docIsExhausted = true;
+                continue;
+            }
 
             const scopes = new Set(String(tokenState.scope || "").split(/\s+/).filter(Boolean));
             let matchesAll = true;
@@ -739,16 +792,28 @@ async function listAccessTokenCandidates({
                 chosenField = tokenField;
                 chosenScope = tokenState.scope || "";
                 break;
+            } else {
+                docHasMissingScope = true;
             }
         }
 
         if (chosenField) {
+            if (isNewUser) {
+                usableUsersCount++;
+                byTokenField[chosenField] = (byTokenField[chosenField] || 0) + 1;
+            }
             candidates.push({
                 userId,
                 tokenField: chosenField,
                 scope: chosenScope,
                 recordId: doc._id
             });
+        } else if (docHasMissingScope) {
+            missingScope++;
+        } else if (docIsRevoked) {
+            revoked++;
+        } else if (docIsExhausted) {
+            exhausted++;
         }
     }
 
@@ -756,14 +821,31 @@ async function listAccessTokenCandidates({
     const nextCursor = lastScanned ? (lastScanned._id || lastScanned.id) : null;
     const hasMore = docs.length >= limit && nextCursor !== null;
 
-    Object.assign(candidates, {
+    const result = {
         candidates,
         nextCursor,
         hasMore,
-        scanned: docs.length
-    });
+        scanned: docs.length,
+        statistics: {
+            scannedRecords: docs.length,
+            uniqueUsers: newUniqueUsers,
+            usableUsers: usableUsersCount,
+            missingScope,
+            missingUserId,
+            revoked,
+            exhausted,
+            byTokenField
+        },
+        get length() {
+            return candidates.length;
+        }
+    };
 
-    return candidates;
+    result[Symbol.iterator] = function* () {
+        yield* candidates;
+    };
+
+    return result;
 }
 
 function revealTokenStateForOwner(token = {}) {
@@ -892,6 +974,8 @@ function recoveryReasonLabel(reason) {
         refresh_token_decrypt_failed: "ถอดรหัส Refresh Token ไม่สำเร็จ",
         token_revoked: "Token ถูกยกเลิก",
         refresh_exhausted: "Refresh ล้มเหลวถึงจำนวนสูงสุด",
+        record_missing: "ไม่พบข้อมูลผู้ใช้ในระบบ",
+        user_deleted: "ข้อมูลผู้ใช้ถูกลบ",
         access_token_expired_without_refresh: "Access Token หมดอายุและต่ออายุไม่ได้"
     };
     if (String(reason).startsWith("missing_scope:")) return `ขาด Scope ${String(reason).slice(14)}`;
@@ -927,13 +1011,23 @@ async function getRecoveryStatuses(userIds, {
 
     for (const userId of safeIds) {
         const doc = docMap.get(userId);
-        const tokenState = doc?.[tokenField] || {};
+        if (!doc) {
+            resultMap.set(userId, {
+                status: "missing",
+                reasons: ["record_missing"],
+                reasonLabels: [recoveryReasonLabel("record_missing")]
+            });
+            continue;
+        }
+
+        const tokenState = doc[tokenField] || {};
         const reasons = [
             ...checkTokenCryptoReasons(tokenState, now, failMax),
             ...collectMissingScopeReasons(tokenState.scope, requiredScopes)
         ];
         const uniqueReasons = [...new Set(reasons)];
         resultMap.set(userId, {
+            status: uniqueReasons.length === 0 ? "healthy" : "recovery_required",
             reasons: uniqueReasons,
             reasonLabels: uniqueReasons.map(recoveryReasonLabel)
         });
@@ -1283,6 +1377,7 @@ module.exports = {
     exchangeAuthorizationCode,
     commitVerificationActivation,
     withTokenRefreshLock,
+    withOAuthTokenStateLock: withTokenRefreshLock,
     getAccessToken,
     refreshDueTokens,
     listAccessTokenCandidates,

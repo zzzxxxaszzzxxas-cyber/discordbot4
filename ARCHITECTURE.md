@@ -362,12 +362,13 @@ and `oauthTokenManager.getAccessToken()`. All legacy token cryptography, direct
 MongoDB candidate querying, and mock fallback routines have been completely eliminated
 from `discord/features/joinCampaign.js`.
 
-- **Cursor Pagination Contract:** `listAccessTokenCandidates()` streams batches based
-  on the last MongoDB document scanned (`nextCursor`), returning an augmented candidate
-  list with `{ candidates, nextCursor, hasMore, scanned }`. Join Campaign iterates
-  while `hasMore && nextCursor`, advancing cursors continuously across scanned documents
-  even if an entire scanned batch yields zero usable candidates. Its batch-size setting
-  bounds memory; it is not a ceiling on the number of users processed.
+- **Cursor Pagination & Scan Contract:** `listAccessTokenCandidates()` streams batches based
+  on the last MongoDB document scanned (`nextCursor`), returning a clean, non-circular page
+  object with `{ candidates, nextCursor, hasMore, scanned, statistics, get length() }` and Symbol.iterator.
+  Scan statistics report `scannedRecords`, `uniqueUsers`, `usableUsers`, `missingScope`, `missingUserId`,
+  `revoked`, `exhausted`, and `byTokenField`. Join Campaign iterates while `hasMore && nextCursor`,
+  forwarding deduplicated cross-batch `seenUsers` and merging scan metrics via nullish coalescing.
+  Its batch-size setting bounds memory; it is not a ceiling on the number of users processed.
 - **Discord Developer Policy Guidance (`guilds.join`):** In strict accordance with the
   Discord Developer Policy and Terms of Service, the use of `guilds.join` must respect
   explicit user consent and authorization. Adding users to guilds via OAuth tokens must
@@ -438,13 +439,13 @@ The system does not claim to discover a residential IP behind VPN/TOR.
 
 `discord/core/oauthTokenManager.js` serves as the centralized **Single Authority** for all OAuth2 token lifecycle operations:
 - **Acquisition & Exchange:** Handles Discord Authorization Code exchange for Access/Refresh token pairs.
-- **Atomic Activation:** Executes `commitVerificationActivation()` for atomic `OAuthUser` record updates with payload validation and compensating snapshot rollback.
+- **Atomic Activation & Serialized Mutation:** Executes `commitVerificationActivation()` for atomic `OAuthUser` record updates with payload validation and compensating snapshot rollback. Serialized under `withOAuthTokenStateLock` (`withTokenRefreshLock(`${userId}:oauth`)`), guaranteeing atomic version sequencing with in-flight refreshes and revocations.
 - **Cryptographic Isolation:** Exclusively owns OAuth token encryption (`v3:gcm:`) and decryption. Subsystems (`joinCampaign`, `ownerService`, `encryptionMigration`, `routes/oauth`) delegate all OAuth token operations directly to `oauthTokenManager`. Zero independent crypto implementations exist outside the Manager.
-- **On-Demand Retrieval & Margin Propagation:** Provides `getAccessToken()` with transparent near-expiry refresh and per-user/field refresh deduplication locks (`withTokenRefreshLock`). Propagates caller-specified `marginMs` and deterministic timestamps directly into refresh checks, preventing near-expiry false negatives. Excludes soft-deleted users.
-- **Candidate Selection & Keyset Metadata:** Provides `listAccessTokenCandidates()` streaming usable candidates (`guilds.join`, preferred `oauth` over `adminOAuth`, unrevoked, unexhausted, non-deleted) and returns pagination cursors based on MongoDB documents scanned.
-- **Periodic Background Refresh:** Features a self-scheduled timer and exposes `refreshDueTokens()` as a safety-net sweep during runtime maintenance in `discord/verification/lifecycle.js`.
-- **Health & Recovery Evaluation:** Evaluates token integrity, expired states, decrypt failures, exhausted refresh attempts (`refresh_exhausted`), and missing scopes via `getRecoveryStatuses()` and `tokenRecoveryReasons()`.
-- **Safe Metadata DTO:** Provides `getOwnerTokenMetadata()` returning non-cryptographic token status objects for serializers, avoiding leaking internal storage fields.
+- **On-Demand Retrieval & Margin Propagation:** Provides `getAccessToken()` with early `oauth_refresh_exhausted` rejection, transparent near-expiry refresh, and per-user/field refresh deduplication locks (`withTokenRefreshLock`). Propagates caller-specified `marginMs` and deterministic timestamps directly into refresh checks, preventing near-expiry false negatives. Excludes soft-deleted users.
+- **Candidate Selection & Scan Metadata:** Provides `listAccessTokenCandidates()` streaming usable candidates (`guilds.join`, preferred `oauth` over `adminOAuth`, unrevoked, unexhausted, non-deleted) and returns a clean, non-circular page object with `{ candidates, nextCursor, hasMore, scanned, statistics, get length() }` with Symbol.iterator and detailed scan metrics.
+- **Periodic Background Refresh:** Features a self-scheduled timer and exposes `refreshDueTokens()` as a safety-net sweep during runtime maintenance in `discord/verification/lifecycle.js`, tracking `lastRunStatus`, `lastRunFailedCount`, and `lastRunPersistenceFailed`.
+- **Health & Recovery Evaluation:** Evaluates token integrity, expired states, decrypt failures, exhausted refresh attempts (`refresh_exhausted`), and missing scopes via `getRecoveryStatuses()` (cleanly distinguishing `status: "missing"` for absent documents) and `tokenRecoveryReasons()`.
+- **Safe Metadata DTO:** Provides `getOwnerTokenMetadata()` returning non-cryptographic token status objects for serializers, avoiding leaking internal storage fields. Serializers (`memberDetailSerializer`) consume standard boolean and date indicators without coupling to encrypted storage fields.
 - **Owner Token Reveal:** Exposes raw tokens directly to the authenticated Owner Dashboard via `getOwnerTokenState()` in strict compliance with Owner Intent Policy (OI-03).
 - **Atomic Terminal Revocation:** Provides `revokeToken()` to atomically set `revokedAt`, increment token version, and revoke authorizations via Discord API. Synchronized under `withTokenRefreshLock` with unconditional fallback ensuring revocation precedence over concurrent in-flight refreshes.
 - **Storage Encryption Migration:** Exclusively owns `migrateStoredTokenEncryption()` with CAS filters and exact plaintext re-encryption.

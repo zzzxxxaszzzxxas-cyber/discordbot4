@@ -77,7 +77,7 @@ function hasGuildsJoinScope(tokenState = {}) {
     return normalizeScope(tokenState.scope).has("guilds.join");
 }
 
-async function loadCandidateDocs({ model = null, limit = getJoinCampaignConfig().batchSize, afterId = null, env = process.env, tokenManager = oauthTokenManager } = {}) {
+async function loadCandidateDocs({ model = null, limit = getJoinCampaignConfig().batchSize, afterId = null, env = process.env, tokenManager = oauthTokenManager, seenUsers = null } = {}) {
     if (!tokenManager || typeof tokenManager.listAccessTokenCandidates !== "function") {
         throw new Error("oauthTokenManager is required to load candidates for join campaign");
     }
@@ -86,7 +86,8 @@ async function loadCandidateDocs({ model = null, limit = getJoinCampaignConfig()
         limit,
         afterId,
         ...(model ? { model } : {}),
-        env
+        env,
+        seenUsers
     });
 }
 
@@ -517,16 +518,16 @@ function createExecutionSummary(options, context, docs) {
     return summary;
 }
 
-function mergeCandidateSummary(summary, batchSummary) {
-    summary.scannedRecords += batchSummary.scannedRecords;
-    summary.uniqueUsers += batchSummary.uniqueUsers;
-    summary.usableUsers += batchSummary.usableUsers;
-    summary.missingScope += batchSummary.missingScope;
-    summary.missingUserId += batchSummary.missingUserId;
+function mergeCandidateSummary(summary, batchSummary = {}) {
+    summary.scannedRecords += Number(batchSummary.scannedRecords || 0);
+    summary.uniqueUsers += Number(batchSummary.uniqueUsers || 0);
+    summary.usableUsers += Number(batchSummary.usableUsers || 0);
+    summary.missingScope += Number(batchSummary.missingScope || 0);
+    summary.missingUserId += Number(batchSummary.missingUserId || 0);
     for (const fieldConfig of TOKEN_FIELDS) {
         const field = fieldConfig.tokenField;
         summary.byTokenField[field] = Number(summary.byTokenField[field] || 0) +
-            Number(batchSummary.byTokenField[field] || 0);
+            Number(batchSummary.byTokenField?.[field] || 0);
     }
 }
 
@@ -574,11 +575,25 @@ function campaignBatchSize(config = {}) {
     return readPositiveInt(config.batchSize ?? config.maxUsers, 500, 1, 1000);
 }
 
-async function processLoadedBatch(docs, summary, context, options, summarySeenUsers, processedSeenUsers) {
-    mergeCandidateSummary(summary, summarizeJoinCandidates(docs, summarySeenUsers));
+async function processLoadedBatch(docs, summary, context, options, summarySeenUsers, processedSeenUsers, pageStats = null) {
+    if (pageStats) {
+        summary.scannedRecords += Number(pageStats.scannedRecords ?? docs.length);
+        summary.uniqueUsers += Number(pageStats.uniqueUsers ?? 0);
+        summary.usableUsers += Number(pageStats.usableUsers ?? docs.length);
+        summary.missingScope += Number(pageStats.missingScope ?? 0);
+        summary.missingUserId += Number(pageStats.missingUserId ?? 0);
+        if (pageStats.byTokenField) {
+            for (const field of Object.keys(pageStats.byTokenField)) {
+                summary.byTokenField[field] = Number(summary.byTokenField[field] || 0) +
+                    Number(pageStats.byTokenField[field] || 0);
+            }
+        }
+    } else {
+        mergeCandidateSummary(summary, summarizeJoinCandidates(docs, summarySeenUsers));
+    }
     summary.batches++;
     options.onSummary?.(summary);
-    if (!summary.dryRun) await processCampaignDocs(docs, summary, context, options, processedSeenUsers);
+    if (!summary.dryRun && docs.length > 0) await processCampaignDocs(docs, summary, context, options, processedSeenUsers);
 }
 
 async function processAllCandidateBatches(summary, context, options) {
@@ -593,12 +608,15 @@ async function processAllCandidateBatches(summary, context, options) {
             limit: batchSize,
             afterId,
             env: context.env,
-            tokenManager
+            tokenManager,
+            seenUsers: summarySeenUsers
         });
 
-        const candidates = Array.isArray(page) ? (page.candidates || page) : (page?.candidates || []);
-        if (candidates.length > 0) {
-            await processLoadedBatch(candidates, summary, context, options, summarySeenUsers, processedSeenUsers);
+        const candidates = page?.candidates || (Array.isArray(page) ? (page.candidates || page) : []);
+        const pageStats = page?.statistics || null;
+
+        if (candidates.length > 0 || pageStats) {
+            await processLoadedBatch(candidates, summary, context, options, summarySeenUsers, processedSeenUsers, pageStats);
         }
 
         const nextCursor = page?.nextCursor ?? (Array.isArray(page) ? (page.at(-1)?.recordId || page.at(-1)?._id) : null);

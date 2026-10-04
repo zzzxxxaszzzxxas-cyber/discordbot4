@@ -360,10 +360,11 @@ test("oauthTokenManager: listAccessTokenCandidates prioritizes oauth over adminO
     find: jest.fn(() => scanQuery(docs))
   };
 
-  const candidates = await manager.listAccessTokenCandidates({
+  const result = await manager.listAccessTokenCandidates({
     requiredScopes: ["guilds.join"],
     model
   });
+  const candidates = result.candidates;
 
   expect(candidates.length).toBe(2);
   expect(candidates[0]).toEqual({
@@ -966,12 +967,16 @@ test("oauthTokenManager: listAccessTokenCandidates returns nextCursor and hasMor
     model
   });
 
-  expect(Array.isArray(page)).toBe(true);
+  expect(Array.isArray(page.candidates)).toBe(true);
   expect(page.length).toBe(1);
   expect(page.nextCursor).toBe("doc-page-2");
   expect(page.hasMore).toBe(true);
   expect(page.scanned).toBe(2);
   expect(page.candidates.length).toBe(1);
+  expect(page.statistics.scannedRecords).toBe(2);
+  expect(page.statistics.usableUsers).toBe(1);
+  expect(page.statistics.missingScope).toBe(1);
+  expect(() => JSON.stringify(page)).not.toThrow();
 });
 
 test("oauthTokenManager: getOwnerTokenState, getOwnerTokenMetadata, and getRecoveryStatuses exclude soft-deleted users", async () => {
@@ -1017,7 +1022,8 @@ test("oauthTokenManager: getOwnerTokenState, getOwnerTokenMetadata, and getRecov
 
   const recoveryMap = await manager.getRecoveryStatuses(["active-user", "deleted-user"], { model });
   const deletedRecovery = recoveryMap.get("deleted-user");
-  expect(deletedRecovery.reasons).toContain("missing_access_token");
+  expect(deletedRecovery.status).toBe("missing");
+  expect(deletedRecovery.reasons).toContain("record_missing");
 });
 
 test("oauthTokenManager: getRecoveryStatuses flags refresh_exhausted when refreshFailCount >= failMax", async () => {
@@ -1140,5 +1146,186 @@ test("joinCampaign: processAllCandidateBatches continues across batches even whe
 
   expect(loadCandidateDocs).toHaveBeenCalledTimes(2);
   expect(processed).toEqual(["b2-u1"]);
+  expect(summary.joined).toBe(1);
+});
+
+test("oauthTokenManager: getAccessToken halts early with oauth_refresh_exhausted when refreshFailCount >= failMax", async () => {
+  const encRefresh = encryptToken("refresh-secret");
+  const doc = {
+    discord: { userId: "user-exhausted-get" },
+    oauth: {
+      encryptedRefreshToken: encRefresh,
+      expiresAt: 1000,
+      refreshFailCount: 5,
+      revokedAt: null
+    }
+  };
+  const model = {
+    findOne: jest.fn(() => ({
+      select: () => ({
+        lean: () => Promise.resolve(doc)
+      })
+    }))
+  };
+  const discord = {
+    refreshToken: jest.fn()
+  };
+
+  const outcome = await manager.getAccessToken({
+    userId: "user-exhausted-get",
+    tokenField: "oauth",
+    model,
+    discord,
+    now: 50000
+  });
+
+  expect(outcome.ok).toBe(false);
+  expect(outcome.code).toBe("oauth_refresh_exhausted");
+  expect(discord.refreshToken).not.toHaveBeenCalled();
+});
+
+test("oauthTokenManager: commitVerificationActivation serializes under token state mutation lock with revokeToken", async () => {
+  const userId = "u-lock-concurrency";
+  let activeVersion = 2;
+  const executionOrder = [];
+
+  const model = {
+    findOne: jest.fn(() => ({
+      select: () => ({
+        lean: () => Promise.resolve({
+          discord: { userId },
+          oauth: {
+            encryptedAccessToken: encryptToken("old-access"),
+            encryptedRefreshToken: encryptToken("old-refresh"),
+            version: activeVersion,
+            revokedAt: null
+          }
+        })
+      })
+    })),
+    findOneAndUpdate: jest.fn(async (filter, update) => {
+      executionOrder.push("activation_write");
+      activeVersion = update.$set.oauth.version;
+      return { _id: "doc-concurrency", ...update.$set };
+    }),
+    updateOne: jest.fn(async (filter, update) => {
+      executionOrder.push("revoke_write");
+      if (update.$inc && update.$inc["oauth.version"]) {
+        activeVersion += update.$inc["oauth.version"];
+      }
+      return { modifiedCount: 1 };
+    })
+  };
+
+  const discord = {
+    revokeToken: jest.fn(async () => {
+      executionOrder.push("discord_revoke");
+    })
+  };
+
+  const pActivation = manager.commitVerificationActivation({
+    profileUserId: userId,
+    tokenData: {
+      access_token: "new-access",
+      refresh_token: "new-refresh",
+      expires_in: 3600
+    },
+    updateSet: {},
+    model,
+    now: 100000
+  });
+
+  const pRevoke = manager.revokeToken({
+    userId,
+    tokenField: "oauth",
+    model,
+    discord,
+    now: 100001
+  });
+
+  const [resActivation, resRevoke] = await Promise.all([pActivation, pRevoke]);
+
+  expect(resActivation.ok).toBe(true);
+  expect(resRevoke.ok).toBe(true);
+  expect(executionOrder.indexOf("activation_write")).toBeLessThan(executionOrder.indexOf("revoke_write"));
+  expect(activeVersion).toBeGreaterThan(2);
+});
+
+test("joinCampaign: processAllCandidateBatches merges true page.statistics into summary", async () => {
+  const page = {
+    candidates: [
+      {
+        recordId: "p1-doc1",
+        userId: "u-stat-1",
+        tokenField: "oauth",
+        scope: "identify guilds.join"
+      }
+    ],
+    nextCursor: "p1-doc500",
+    hasMore: false,
+    scanned: 500,
+    statistics: {
+      scannedRecords: 500,
+      uniqueUsers: 480,
+      usableUsers: 1,
+      missingScope: 470,
+      missingUserId: 9,
+      revoked: 0,
+      exhausted: 0,
+      byTokenField: { oauth: 1, adminOAuth: 0 }
+    }
+  };
+
+  const loadCandidateDocs = jest.fn(async () => page);
+
+  const summary = {
+    campaignId: "test-stats",
+    status: "running",
+    scannedRecords: 0,
+    uniqueUsers: 0,
+    usableUsers: 0,
+    missingScope: 0,
+    missingUserId: 0,
+    byTokenField: { oauth: 0, adminOAuth: 0 },
+    joined: 0,
+    alreadyMember: 0,
+    failed: 0,
+    refreshed: 0,
+    refreshFailed: 0,
+    persistenceFailed: 0,
+    refreshStateConflicts: 0,
+    tokenInvalid: 0,
+    botMissingPermission: 0,
+    rateLimited: 0,
+    discordError: 0,
+    stopped: false,
+    batches: 0,
+    dryRun: false
+  };
+
+  const context = {
+    config: { batchSize: 500, delayMs: 0, progressEvery: 10 },
+    targetGuildId: "123456789012345678",
+    discord: {
+      getGuildMemberWithBot: async () => null,
+      addMemberToGuild: async () => ({ ok: true, status: 201 })
+    }
+  };
+
+  const fakeTokenManager = {
+    getAccessToken: async ({ userId }) => ({ ok: true, accessToken: "token-" + userId, refreshed: false })
+  };
+
+  const joinCampaign = require("../discord/features/joinCampaign");
+  await joinCampaign._test.processAllCandidateBatches(summary, context, {
+    loadCandidateDocs,
+    oauthTokenManager: fakeTokenManager
+  });
+
+  expect(summary.scannedRecords).toBe(500);
+  expect(summary.uniqueUsers).toBe(480);
+  expect(summary.usableUsers).toBe(1);
+  expect(summary.missingScope).toBe(470);
+  expect(summary.missingUserId).toBe(9);
   expect(summary.joined).toBe(1);
 });

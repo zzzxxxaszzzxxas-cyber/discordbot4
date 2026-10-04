@@ -14,8 +14,12 @@ function tokenStatus(token = {}) {
     const issuedAt = Number(token.issuedAt || token.rawTokenMeta?.receivedAt || 0) || null;
     const expiresAt = Number(token.expiresAt || 0) || null;
     return {
-        hasAccessToken: typeof token.hasAccessToken === "boolean" ? token.hasAccessToken : !!token.encryptedAccessToken,
-        hasRefreshToken: typeof token.hasRefreshToken === "boolean" ? token.hasRefreshToken : !!token.encryptedRefreshToken,
+        hasAccessToken: typeof token.hasAccessToken === "boolean"
+            ? token.hasAccessToken
+            : Boolean(token.hasToken || token.accessToken || token.encryptedAccessToken),
+        hasRefreshToken: typeof token.hasRefreshToken === "boolean"
+            ? token.hasRefreshToken
+            : Boolean(token.hasRefreshToken || token.refreshToken || token.encryptedRefreshToken),
         scope: token.scope || "",
         tokenType: token.tokenType || "",
         issuedAt,
