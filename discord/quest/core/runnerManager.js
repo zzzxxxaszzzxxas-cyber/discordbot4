@@ -226,6 +226,7 @@ async function startRunner({
 
     let liveMsg = null;
     let outputChannel = null;
+    let dmDisabled = false;
     let username = initialUsername ?? '...';
     let accountId = initialAccountId;
     let lastRenderAt = 0;
@@ -245,47 +246,16 @@ async function startRunner({
     }
 
     async function resolveOutputChannel() {
+        if (dmDisabled) return null;
         if (outputChannel?.isTextBased?.()) return outputChannel;
-        if (!client) return null;
+        if (!client || !ownerId) return null;
 
-        // Prefer sending to DM of the owner who started the runner (with timeout guard)
-        if (ownerId) {
-            const dm = await resolveUserDMChannel(client, ownerId);
-            if (dm) {
-                outputChannel = dm;
-                return outputChannel;
-            }
-        }
-
-        // Fallback to guild text channel
-        if (channelId) {
-            const ch = await client.channels.fetch(channelId).catch(() => null);
-            if (ch?.isTextBased?.()) {
-                outputChannel = ch;
-                return outputChannel;
-            }
+        const dm = await resolveUserDMChannel(client, ownerId);
+        if (dm?.isTextBased?.()) {
+            outputChannel = dm;
+            return outputChannel;
         }
         return null;
-    }
-
-    async function sendWithChannelFallback(ch, payload) {
-        const body = typeof payload === 'string' ? { content: payload } : payload;
-        try {
-            return await ch.send(body);
-        } catch (sendErr) {
-            // Fallback to guild channel if DM failed (e.g. user has DMs closed)
-            if (channelId && ch?.id !== channelId) {
-                if (isPermanentDmError(sendErr)) {
-                    console.warn(`[Quest Runner:${jobKey}] Permanent DM error (${sendErr.code || sendErr.message}); falling back to guild channel`);
-                }
-                const fallbackCh = await client.channels.fetch(channelId).catch(() => null);
-                if (fallbackCh?.isTextBased?.()) {
-                    outputChannel = fallbackCh;
-                    return await fallbackCh.send(body);
-                }
-            }
-            throw sendErr;
-        }
     }
 
     async function flush({ silentRollover = false } = {}) {
@@ -307,18 +277,32 @@ async function startRunner({
                 payload.flags = 4096;
             }
 
+            if (dmDisabled) return;
             const editingExisting = Boolean(liveMsg);
             try {
                 if (!liveMsg) {
                     const ch = await resolveOutputChannel();
-                    if (!ch?.isTextBased?.()) return;
-                    liveMsg = await sendWithChannelFallback(ch, payload);
+                    if (!ch?.isTextBased?.()) {
+                        dmDisabled = true;
+                        return;
+                    }
+                    liveMsg = await ch.send(payload);
                 } else {
                     await liveMsg.edit(payload);
                 }
             } catch (err) {
-                if (editingExisting) liveMsg = null;
-                console.warn(`[Quest Runner:${jobKey}] Status message update failed: ${err.message}`);
+                if (editingExisting) {
+                    liveMsg = null;
+                    if (isPermanentDmError(err)) {
+                        dmDisabled = true;
+                        outputChannel = null;
+                    }
+                } else {
+                    dmDisabled = true;
+                    outputChannel = null;
+                    liveMsg = null;
+                }
+                console.warn(`[Quest Runner:${jobKey}] DM message update failed (${err.code || err.message}); continuing runner silently without DM`);
             }
         });
 
@@ -499,17 +483,19 @@ async function startRunner({
             issues = summary.issues;
         }
 
-        await sendQuestSummaryDM({
-            ownerId,
-            accountId,
-            username,
-            mode: 'oneshot',
-            totalQuests: summary.totalSupportedQuests,
-            completedQuests: summary.completedByBotCount,
-            issues,
-            jobKey,
-            targetMessage: liveMsg
-        }).catch(() => {});
+        if (!dmDisabled) {
+            await sendQuestSummaryDM({
+                ownerId,
+                accountId,
+                username,
+                mode: 'oneshot',
+                totalQuests: summary.totalSupportedQuests,
+                completedQuests: summary.completedByBotCount,
+                issues,
+                jobKey,
+                targetMessage: liveMsg
+            }).catch(() => {});
+        }
     }
 
     async function prepareOneShotRound(allQuests) {
@@ -945,12 +931,14 @@ async function startRunner({
                 });
                 await liveMsg.edit({ embeds: [authFailEmbed] }).catch(() => {});
             }
-            await sendQuestAuthFailureDM({
-                ownerId,
-                accountId,
-                username,
-                jobKey
-            }).catch(() => {});
+            if (!dmDisabled) {
+                await sendQuestAuthFailureDM({
+                    ownerId,
+                    accountId,
+                    username,
+                    jobKey
+                }).catch(() => {});
+            }
         } else {
             addLog(`❌ ${username}: FATAL ERROR — ${err.message}`);
             persistSchedule({ lastError: err.message });

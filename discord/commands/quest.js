@@ -343,9 +343,9 @@ async function handleQuestModalSubmit(interaction) {
     const activateEmoji = config.emojis?.activate || boostEmoji;
     let finalContent = lines.join('\n');
     if (isDaily && anyStarted) {
-        finalContent = `**${activateEmoji} AUTO DAILY QUEST เปิดใช้งานแล้ว**\n\n${finalContent}\n\nระบบได้ส่งข้อความสถานะสดไปยัง **DM (แชทส่วนตัว)** ของคุณเรียบร้อยแล้ว (หากปิดรับ DM ระบบจะส่งในห้องนี้แทน) และสามารถใช้ปุ่ม **STOP** เพื่อหยุดได้ตลอดเวลา`;
+        finalContent = `**${activateEmoji} AUTO DAILY QUEST เปิดใช้งานแล้ว**\n\n${finalContent}\n\nระบบได้ส่งข้อความสถานะสดไปยัง **DM (แชทส่วนตัว)** ของคุณเรียบร้อยแล้ว (หากปิดรับ DM ระบบจะยังคงทำงานต่อไปในเบื้องหลังตามปกติ) และสามารถใช้ปุ่ม **STOP** เพื่อหยุดได้ตลอดเวลา`;
     } else if (anyStarted) {
-        finalContent = `**${activateEmoji} เริ่มต้นทำงาน ONE-SHOT QUEST แล้ว**\n\n${finalContent}\n\nระบบกำลังเริ่มทำเควสต์และส่งข้อความสถานะสดไปยัง **DM (แชทส่วนตัว)** ของคุณเรียบร้อยแล้ว (หากปิดรับ DM ระบบจะส่งในห้องนี้แทน)`;
+        finalContent = `**${activateEmoji} เริ่มต้นทำงาน ONE-SHOT QUEST แล้ว**\n\n${finalContent}\n\nระบบกำลังเริ่มทำเควสต์และส่งข้อความสถานะสดไปยัง **DM (แชทส่วนตัว)** ของคุณเรียบร้อยแล้ว (หากปิดรับ DM ระบบจะยังคงทำงานต่อไปในเบื้องหลังตามปกติ)`;
     }
 
     return interaction.editReply({ content: finalContent });

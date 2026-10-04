@@ -334,7 +334,7 @@ test('handleQuestButton allows users to open modal and view stop controls', asyn
     assert.ok(stopReply.embeds && stopReply.embeds.length > 0);
 });
 
-test('runnerManager routes status updates to DM and falls back to channel when DM fails', async () => {
+test('runnerManager routes status updates to DM and continues silently without channel fallback when DM fails', async () => {
     const dmDeliveries = [];
     const mockDm = {
         id: 'dm_12345',
@@ -375,7 +375,7 @@ test('runnerManager routes status updates to DM and falls back to channel when D
     assert.ok(dmDeliveries[0].embeds && dmDeliveries[0].embeds.length > 0);
     assert.match(dmDeliveries[0].embeds[0].data.fields[0].value, /TestUserDM/);
 
-    // Test fallback when DM sending fails (e.g. DMs closed)
+    // Test that when DM sending fails (e.g. DMs closed), it never falls back to guild channel and continues silently
     const channelDeliveries = [];
     const mockClosedDm = {
         id: 'dm_closed',
@@ -420,9 +420,38 @@ test('runnerManager routes status updates to DM and falls back to channel when D
     fallbackRunner.controller.abort();
     await fallbackRunner.task.catch(() => {});
 
-    assert.ok(channelDeliveries.length > 0, 'Status message should fall back to guild channel when DM fails');
-    assert.ok(channelDeliveries[0].embeds && channelDeliveries[0].embeds.length > 0);
-    assert.match(channelDeliveries[0].embeds[0].data.fields[0].value, /TestUserClosed/);
+    assert.equal(channelDeliveries.length, 0, 'Status message must never fall back to guild channel when DM fails');
+
+    // Test runner without resolvable DM channel never sends to guild channel
+    const noDmChannelDeliveries = [];
+    const mockChannelOnlyClient = {
+        users: {
+            fetch: async () => null
+        },
+        channels: {
+            fetch: async () => ({
+                id: 'guild_channel_only',
+                isTextBased: () => true,
+                send: async (p) => {
+                    noDmChannelDeliveries.push(p);
+                    return { edit: async () => {} };
+                }
+            })
+        }
+    };
+    const silentRunner = await startRunner({
+        jobKey: 'test:dm:routing:3',
+        ownerId: 'user_unknown',
+        userToken: 'invalid_dummy_token_for_test_3',
+        channelId: 'guild_channel_only',
+        client: mockChannelOnlyClient,
+        mode: 'oneshot',
+        username: 'TestUserSilent'
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    silentRunner.controller.abort();
+    await silentRunner.task.catch(() => {});
+    assert.equal(noDmChannelDeliveries.length, 0, 'Status message must never be sent to guild channel when DM is unresolvable');
 });
 
 test('questDm builds correct tones and embeds for success, partial, danger, and auth failure', () => {
