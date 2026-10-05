@@ -740,12 +740,40 @@ function stopJoinCampaign() {
     return { ok: true };
 }
 
+let subsystem = null;
+try {
+    subsystem = require("./joinCampaign/index");
+} catch {}
+
 function getJoinCampaignStatus() {
+    if (subsystem && typeof subsystem.getJoinCampaignStatus === "function") {
+        try {
+            return subsystem.getJoinCampaignStatus();
+        } catch {}
+    }
     return {
         active: runningState.active,
         last: runningState.last,
         stopRequested: runningState.stopRequested
     };
+}
+
+function listRecentCampaigns(options = {}) {
+    if (subsystem && typeof subsystem.listRecentCampaigns === "function") {
+        try {
+            return subsystem.listRecentCampaigns(options);
+        } catch {}
+    }
+    return [];
+}
+
+function getCampaignMetrics() {
+    if (subsystem && typeof subsystem.getCampaignMetrics === "function") {
+        try {
+            return subsystem.getCampaignMetrics();
+        } catch {}
+    }
+    return { totalJobs: 0, completedJobs: 0, failedJobs: 0, totalJoined: 0, successRatePercent: 0 };
 }
 
 module.exports = {
@@ -761,6 +789,8 @@ module.exports = {
     startJoinCampaign,
     stopJoinCampaign,
     getJoinCampaignStatus,
+    listRecentCampaigns,
+    getCampaignMetrics,
     _test: {
         parseIdSet,
         readBooleanDefaultFalse,

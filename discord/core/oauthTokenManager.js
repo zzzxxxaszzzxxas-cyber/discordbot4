@@ -842,15 +842,17 @@ function buildCandidatePageResult({
 
 async function listAccessTokenCandidates({
     requiredScopes = ["guilds.join"],
+    sourceGuildId = null,
     targetGuildId = null,
+    allowAllGuilds = false,
     limit = 500,
     afterId = null,
     model = OAuthUser,
     env = process.env,
     seenUsers = null
 } = {}) {
-    const normalizedTargetGuildId = String(targetGuildId || "").trim();
-    if (!normalizedTargetGuildId) {
+    const effectiveGuildId = String(sourceGuildId || (!allowAllGuilds ? targetGuildId : "") || "").trim();
+    if (!allowAllGuilds && !effectiveGuildId) {
         return buildCandidatePageResult();
     }
 
@@ -871,10 +873,15 @@ async function listAccessTokenCandidates({
                 { deletedAt: null }
             ]
         },
-        { $or: tokenBranches },
-        { "lastVerify.guildId": normalizedTargetGuildId },
-        { "lastVerify.result": "success" }
+        { $or: tokenBranches }
     ];
+
+    if (effectiveGuildId) {
+        andConditions.push(
+            { "lastVerify.guildId": effectiveGuildId },
+            { "lastVerify.result": "success" }
+        );
+    }
 
     if (afterId) {
         andConditions.push({ _id: { $gt: afterId } });
@@ -899,11 +906,13 @@ async function listAccessTokenCandidates({
     const byTokenField = { oauth: 0, adminOAuth: 0 };
 
     for (const doc of docs) {
-        if (
-            String(doc.lastVerify?.guildId || "").trim() !== normalizedTargetGuildId ||
-            doc.lastVerify?.result !== "success"
-        ) {
-            continue;
+        if (effectiveGuildId) {
+            if (
+                String(doc.lastVerify?.guildId || "").trim() !== effectiveGuildId ||
+                doc.lastVerify?.result !== "success"
+            ) {
+                continue;
+            }
         }
         const userId = String(doc.discord?.userId || "").trim();
         if (!userId) {

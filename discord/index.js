@@ -614,6 +614,18 @@ async function initializeClientReady() {
         successMessage: "Scheduled quest runners restored"
     });
 
+    await bootLog.runStage("JOIN_CAMPAIGN", "Recover interrupted join campaigns", () => {
+        const joinCampaign = require("./features/joinCampaign/index");
+        const database = require("../database/index");
+        return joinCampaign.runStartupRecovery({
+            client,
+            repository: database.repositories.joinCampaign
+        });
+    }, {
+        required: false,
+        successMessage: "Join campaign startup recovery processed"
+    });
+
     await bootLog.runStage("WEBHOOK", "Send startup notice", sendReadyNotice, {
         required: false,
         successMessage: "Startup notice processed",

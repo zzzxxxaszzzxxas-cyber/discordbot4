@@ -274,6 +274,15 @@ const slashCommandsData = [
     {
         name: "dm-panel",
         description: "เปิดแผงควบคุมระบบกระจายข้อความ DM ผ่านบอทตัวรอง (เฉพาะเจ้าของบอท)"
+    },
+
+    {
+        name: "join-panel",
+        description: "เปิดแผงควบคุมดึงสมาชิกเข้าเซิร์ฟเวอร์",
+        options: [
+            { type: 3, name: "target_guild", description: "ไอดีเซิร์ฟเวอร์ปลายทาง", required: false },
+            { type: 3, name: "source_guild", description: "ไอดีเซิร์ฟเวอร์ต้นทาง", required: false }
+        ]
     }
 ].map(command => ({ ...command, dmPermission: false }));
 

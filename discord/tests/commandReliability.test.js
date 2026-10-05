@@ -39,7 +39,7 @@ test("command registration replaces Discord global commands with the current 18-
     });
 
     assert.equal(result.ok, true);
-    assert.equal(registeredPayload.length, 18);
+    assert.equal(registeredPayload.length, 19);
     assert.equal(registeredPayload.some(command => command.name === "help"), false);
 });
 

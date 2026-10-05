@@ -12,6 +12,7 @@ const { getVoiceEventRepository } = require("./sqlite/repositories/history/Voice
 const { getCommandEventRepository } = require("./sqlite/repositories/history/CommandEventRepository");
 const { getSessionEventRepository } = require("./sqlite/repositories/history/SessionEventRepository");
 const VoiceSessionRuntimeRepository = require("./sqlite/repositories/core/VoiceSessionRuntimeRepository");
+const JoinCampaignRepository = require("./sqlite/repositories/core/JoinCampaignRepository");
 const { getAssetCacheManager } = require("./sqlite/cache/assetCacheManager");
 const scheduler = require("./sqlite/maintenance/scheduler");
 
@@ -21,6 +22,7 @@ let dmNotificationRepo = null;
 let verificationRecoveryRepo = null;
 let verificationStateNonceRepo = null;
 let voiceSessionRuntimeRepo = null;
+let joinCampaignRepo = null;
 
 async function initialize(options = {}) {
     const results = {
@@ -47,6 +49,7 @@ async function initialize(options = {}) {
     verificationRecoveryRepo = new VerificationRecoveryRepository();
     verificationStateNonceRepo = new VerificationStateNonceRepository();
     voiceSessionRuntimeRepo = new VoiceSessionRuntimeRepository();
+    joinCampaignRepo = new JoinCampaignRepository();
 
     // 3. Start 24/7 background maintenance scheduler
     if (options.startScheduler !== false) {
@@ -138,6 +141,10 @@ module.exports = {
         get voiceSessionRuntime() {
             if (!voiceSessionRuntimeRepo) voiceSessionRuntimeRepo = new VoiceSessionRuntimeRepository();
             return voiceSessionRuntimeRepo;
+        },
+        get joinCampaign() {
+            if (!joinCampaignRepo) joinCampaignRepo = new JoinCampaignRepository();
+            return joinCampaignRepo;
         }
     },
     get databaseService() {

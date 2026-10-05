@@ -1,0 +1,348 @@
+"use strict";
+
+const { getDatabase } = require("../../connection");
+
+class JoinCampaignRepository {
+    constructor(db = null) {
+        this._db = db;
+    }
+
+    get db() {
+        return this._db || getDatabase();
+    }
+
+    // --- Job operations ---
+    createJob(data) {
+        const now = Date.now();
+        const stmt = this.db.prepare(`
+            INSERT INTO join_campaign_jobs (
+                id, mode, source_guild_id, source_guild_name, target_guild_id, target_guild_name,
+                status, requested_amount, selected_amount, joined_count, already_count, failed_count,
+                processed_count, retry_count, webhook_url, started_by_user_id, created_at, updated_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        stmt.run(
+            String(data.id),
+            String(data.mode || "ALL_TO_TARGET"),
+            data.sourceGuildId ? String(data.sourceGuildId) : null,
+            data.sourceGuildName ? String(data.sourceGuildName) : null,
+            String(data.targetGuildId),
+            data.targetGuildName ? String(data.targetGuildName) : null,
+            String(data.status || "STAGE"),
+            Number(data.requestedAmount) || 0,
+            Number(data.selectedAmount) || 0,
+            Number(data.joinedCount) || 0,
+            Number(data.alreadyCount) || 0,
+            Number(data.failedCount) || 0,
+            Number(data.processedCount) || 0,
+            Number(data.retryCount) || 0,
+            data.webhookUrl ? String(data.webhookUrl) : null,
+            data.startedByUserId ? String(data.startedByUserId) : null,
+            Number(data.createdAt) || now,
+            Number(data.updatedAt) || now,
+            data.completedAt ? Number(data.completedAt) : null
+        );
+
+        return this.findJobById(data.id);
+    }
+
+    findJobById(id) {
+        const row = this.db.prepare("SELECT * FROM join_campaign_jobs WHERE id = ?").get(String(id));
+        return row ? this._hydrateJob(row) : null;
+    }
+
+    findActiveRunningJob() {
+        const row = this.db.prepare(`
+            SELECT * FROM join_campaign_jobs 
+            WHERE status IN ('RUNNING', 'STAGE') 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        `).get();
+        return row ? this._hydrateJob(row) : null;
+    }
+
+    getActiveJob() {
+        return this.findActiveRunningJob();
+    }
+
+    hasActiveJob() {
+        return Boolean(this.findActiveRunningJob());
+    }
+
+    savePanelState(data) {
+        return this.savePanel(data);
+    }
+
+    markJobCompleted(id) {
+        return this.updateJob(id, { status: "COMPLETED", completedAt: Date.now() });
+    }
+
+    markJobFailed(id) {
+        return this.updateJob(id, { status: "FAILED", completedAt: Date.now() });
+    }
+
+    updateJobProgress(id, progress = {}) {
+        return this.updateJob(id, progress);
+    }
+
+    updateJob(id, updates = {}) {
+        const now = Date.now();
+        const setClauses = ["updated_at = ?"];
+        const params = [now];
+
+        if (updates.status !== undefined) {
+            setClauses.push("status = ?");
+            params.push(String(updates.status));
+        }
+        if (updates.joinedCount !== undefined) {
+            setClauses.push("joined_count = ?");
+            params.push(Number(updates.joinedCount));
+        }
+        if (updates.alreadyCount !== undefined) {
+            setClauses.push("already_count = ?");
+            params.push(Number(updates.alreadyCount));
+        }
+        if (updates.failedCount !== undefined) {
+            setClauses.push("failed_count = ?");
+            params.push(Number(updates.failedCount));
+        }
+        if (updates.processedCount !== undefined) {
+            setClauses.push("processed_count = ?");
+            params.push(Number(updates.processedCount));
+        }
+        if (updates.retryCount !== undefined) {
+            setClauses.push("retry_count = ?");
+            params.push(Number(updates.retryCount));
+        }
+        if (updates.completedAt !== undefined) {
+            setClauses.push("completed_at = ?");
+            params.push(updates.completedAt ? Number(updates.completedAt) : null);
+        }
+
+        params.push(String(id));
+        this.db.prepare(`UPDATE join_campaign_jobs SET ${setClauses.join(", ")} WHERE id = ?`).run(...params);
+        return this.findJobById(id);
+    }
+
+    listRecentJobs({ limit = 20, offset = 0 } = {}) {
+        const rows = this.db.prepare(`
+            SELECT * FROM join_campaign_jobs 
+            ORDER BY created_at DESC 
+            LIMIT ? OFFSET ?
+        `).all(limit, offset);
+        return rows.map(r => this._hydrateJob(r));
+    }
+
+    getMetrics() {
+        const totals = this.db.prepare(`
+            SELECT 
+                COUNT(*) as total_campaigns,
+                COALESCE(SUM(joined_count), 0) as total_joined,
+                COALESCE(SUM(processed_count), 0) as total_processed,
+                COALESCE(SUM(failed_count), 0) as total_failed
+            FROM join_campaign_jobs
+        `).get();
+
+        return {
+            totalCampaigns: Number(totals?.total_campaigns) || 0,
+            totalJoined: Number(totals?.total_joined) || 0,
+            totalProcessed: Number(totals?.total_processed) || 0,
+            totalFailed: Number(totals?.total_failed) || 0
+        };
+    }
+
+    // --- Candidate Items operations ---
+    createItems(campaignId, items = []) {
+        if (!items || items.length === 0) return 0;
+        const now = Date.now();
+        const stmt = this.db.prepare(`
+            INSERT OR IGNORE INTO join_campaign_items (
+                campaign_id, user_id, token_field, status, attempts, last_error, leased_until, created_at, updated_at
+            ) VALUES (?, ?, ?, 'pending', 0, NULL, 0, ?, ?)
+        `);
+
+        const insertMany = this.db.transaction((records) => {
+            let count = 0;
+            for (const item of records) {
+                stmt.run(String(campaignId), String(item.userId), String(item.tokenField || "oauth"), now, now);
+                count++;
+            }
+            return count;
+        });
+
+        return insertMany(items);
+    }
+
+    claimNextPendingItem(campaignId, leaseDurationMs = 30000) {
+        const now = Date.now();
+        const leaseUntil = now + leaseDurationMs;
+
+        const updateStmt = this.db.prepare(`
+            UPDATE join_campaign_items
+            SET status = 'processing', leased_until = ?, updated_at = ?
+            WHERE id = (
+                SELECT id FROM join_campaign_items
+                WHERE campaign_id = ? AND (status = 'pending' OR (status = 'processing' AND leased_until < ?))
+                ORDER BY id ASC
+                LIMIT 1
+            )
+            RETURNING *
+        `);
+
+        try {
+            const row = updateStmt.get(leaseUntil, now, String(campaignId), now);
+            return row ? this._hydrateItem(row) : null;
+        } catch (_) {
+            const findStmt = this.db.prepare(`
+                SELECT id FROM join_campaign_items
+                WHERE campaign_id = ? AND (status = 'pending' OR (status = 'processing' AND leased_until < ?))
+                ORDER BY id ASC
+                LIMIT 1
+            `);
+            const item = findStmt.get(String(campaignId), now);
+            if (!item) return null;
+
+            this.db.prepare(`
+                UPDATE join_campaign_items
+                SET status = 'processing', leased_until = ?, updated_at = ?
+                WHERE id = ?
+            `).run(leaseUntil, now, item.id);
+
+            const row = this.db.prepare("SELECT * FROM join_campaign_items WHERE id = ?").get(item.id);
+            return row ? this._hydrateItem(row) : null;
+        }
+    }
+
+    updateItemStatus(campaignId, userId, status, error = null) {
+        const now = Date.now();
+        this.db.prepare(`
+            UPDATE join_campaign_items
+            SET status = ?, last_error = ?, leased_until = 0, updated_at = ?
+            WHERE campaign_id = ? AND user_id = ?
+        `).run(String(status), error ? String(error) : null, now, String(campaignId), String(userId));
+    }
+
+    releaseExpiredLeases(campaignId) {
+        const now = Date.now();
+        const info = this.db.prepare(`
+            UPDATE join_campaign_items
+            SET status = 'pending', leased_until = 0, updated_at = ?
+            WHERE campaign_id = ? AND status = 'processing' AND leased_until < ?
+        `).run(now, String(campaignId), now);
+        return info.changes;
+    }
+
+    // --- Panel State Operations ---
+    savePanel(data) {
+        const now = Date.now();
+        const stmt = this.db.prepare(`
+            INSERT INTO join_campaign_panels (
+                message_id, channel_id, guild_id, mode, source_guild_id, target_guild_id,
+                last_ready_count, last_status_summary, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                guild_id = excluded.guild_id,
+                mode = excluded.mode,
+                source_guild_id = excluded.source_guild_id,
+                target_guild_id = excluded.target_guild_id,
+                last_ready_count = excluded.last_ready_count,
+                last_status_summary = excluded.last_status_summary,
+                updated_at = excluded.updated_at
+        `);
+
+        stmt.run(
+            String(data.messageId),
+            String(data.channelId),
+            String(data.guildId),
+            String(data.mode || "ALL_TO_TARGET"),
+            data.sourceGuildId ? String(data.sourceGuildId) : null,
+            data.targetGuildId ? String(data.targetGuildId) : null,
+            data.lastReadyCount !== undefined && data.lastReadyCount !== null
+                ? Number(data.lastReadyCount)
+                : (data.readyCount !== undefined && data.readyCount !== null ? Number(data.readyCount) : null),
+            data.lastStatusSummary ? String(data.lastStatusSummary) : null,
+            now
+        );
+
+        return this.findPanelByMessageId(data.messageId);
+    }
+
+    findPanelByMessageId(messageId) {
+        const row = this.db.prepare("SELECT * FROM join_campaign_panels WHERE message_id = ?").get(String(messageId));
+        return row ? this._hydratePanel(row) : null;
+    }
+
+    findPanelByChannelId(channelId) {
+        const row = this.db.prepare("SELECT * FROM join_campaign_panels WHERE channel_id = ? ORDER BY updated_at DESC LIMIT 1").get(String(channelId));
+        return row ? this._hydratePanel(row) : null;
+    }
+
+    deletePanelByChannelId(channelId) {
+        const info = this.db.prepare("DELETE FROM join_campaign_panels WHERE channel_id = ?").run(String(channelId));
+        return info.changes;
+    }
+
+    deletePanelByMessageId(messageId) {
+        const info = this.db.prepare("DELETE FROM join_campaign_panels WHERE message_id = ?").run(String(messageId));
+        return info.changes;
+    }
+
+    // --- Hydration Helpers ---
+    _hydrateJob(row) {
+        return {
+            id: row.id,
+            mode: row.mode,
+            sourceGuildId: row.source_guild_id,
+            sourceGuildName: row.source_guild_name,
+            targetGuildId: row.target_guild_id,
+            targetGuildName: row.target_guild_name,
+            status: row.status,
+            requestedAmount: row.requested_amount,
+            selectedAmount: row.selected_amount,
+            joinedCount: row.joined_count,
+            alreadyCount: row.already_count,
+            failedCount: row.failed_count,
+            processedCount: row.processed_count,
+            retryCount: row.retry_count,
+            webhookUrl: row.webhook_url,
+            startedByUserId: row.started_by_user_id,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            completedAt: row.completed_at
+        };
+    }
+
+    _hydrateItem(row) {
+        return {
+            id: row.id,
+            campaignId: row.campaign_id,
+            userId: row.user_id,
+            tokenField: row.token_field,
+            status: row.status,
+            attempts: row.attempts,
+            lastError: row.last_error,
+            leasedUntil: row.leased_until,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at
+        };
+    }
+
+    _hydratePanel(row) {
+        return {
+            messageId: row.message_id,
+            channelId: row.channel_id,
+            guildId: row.guild_id,
+            mode: row.mode,
+            sourceGuildId: row.source_guild_id,
+            targetGuildId: row.target_guild_id,
+            lastReadyCount: row.last_ready_count,
+            readyCount: row.last_ready_count,
+            lastStatusSummary: row.last_status_summary,
+            updatedAt: row.updated_at
+        };
+    }
+}
+
+module.exports = JoinCampaignRepository;

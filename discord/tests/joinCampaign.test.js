@@ -422,15 +422,20 @@ test("join campaign has no Sync Roles UI or route surface", (t) => { // NOSONAR 
     t.assert.equal(/Sync Roles/.test(runtimeSurface), false);
 });
 
-test("join campaign confirmation stays bound to the guild captured before dry-run", (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
-    const source = fs.readFileSync("discord/index/joinCampaignPage.js", "utf8");
-    const start = source.indexOf("async function startCampaign()");
-    const capturedName = source.indexOf("const guildName=", start);
-    const dryRun = source.indexOf("await api('/api/join-campaign/dry-run'", start);
-    const selectionGuard = source.indexOf("if(selectedGuildId() !== guildId)", dryRun);
-    const confirmation = source.indexOf("window.confirm", dryRun);
+test("join campaign owner dashboard is strictly read-only monitoring without mutating controls", (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
+    const pageSource = fs.readFileSync("discord/index/joinCampaignPage.js", "utf8");
+    const routesSource = fs.readFileSync("discord/index/joinCampaignRoutes.js", "utf8");
 
-    t.assert.ok(start >= 0);
-    t.assert.ok(capturedName > start && capturedName < dryRun);
-    t.assert.ok(selectionGuard > dryRun && selectionGuard < confirmation);
+    // No mutation action buttons in UI
+    t.assert.equal(pageSource.includes("btnStartCampaign"), false);
+    t.assert.equal(pageSource.includes("btnDryRun"), false);
+    t.assert.equal(pageSource.includes("btnStopCampaign"), false);
+    t.assert.equal(pageSource.includes("startCampaign()"), false);
+
+    // No POST mutating endpoints in routes
+    t.assert.equal(routesSource.includes('app.post("/api/join-campaign/start"'), false);
+    t.assert.equal(routesSource.includes('app.post("/api/join-campaign/dry-run"'), false);
+    t.assert.equal(routesSource.includes('app.post("/api/join-campaign/stop"'), false);
+    t.assert.equal(routesSource.includes('app.get("/api/join-campaign/history"'), true);
+    t.assert.equal(routesSource.includes('app.get("/api/join-campaign/metrics"'), true);
 });

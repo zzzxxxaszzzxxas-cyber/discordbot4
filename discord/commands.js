@@ -18,6 +18,7 @@ const roleSweep = require("./commands/roleSweep");
 const questCommand = require("./commands/quest");
 const tokenCheckCommand = require("./commands/tokenCheck");
 const dmPanelCommand = require("./commands/dmPanel");
+const joinCampaign = require("./features/joinCampaign/index");
 
 const { slashCommandsData, validateSlashCommandsData } = require("./commands/registry");
 const {
@@ -277,6 +278,7 @@ async function handleSlashCommand(interaction, client) {
     if (commandName === "quest") return questCommand.handleQuestCommand(interaction);
     if (commandName === "token-check") return tokenCheckCommand.handleTokenCheckCommand(interaction);
     if (commandName === "dm-panel") return dmPanelCommand.handleDmPanelCommand(interaction);
+    if (commandName === "join-panel") return joinCampaign.handleJoinPanelCommand(interaction, client);
     return null;
 }
 
@@ -332,6 +334,10 @@ async function handleInteraction(interaction, client, shadowMasterId) {
 
         if (voiceAdmin.isVoiceAdminInteraction(interaction)) {
             return await voiceAdmin.handleVoiceAdminInteraction(interaction);
+        }
+
+        if (joinCampaign.isJoinCampaignInteraction(interaction)) {
+            return await joinCampaign.handleJoinCampaignInteraction(interaction, client);
         }
 
         if (interaction.isButton()) {
