@@ -327,6 +327,7 @@ registerShutdownHandlers({
     memoryMonitor,
     verificationRuntime: verificationLifecycle,
     dmService,
+    campaignWorker: require("./features/joinCampaign/worker/campaignWorker"),
     runtimeCleanups: [eventRuntime, routeRegistration, { stop: () => readyInitializationController?.stop() }, { stop: () => shutdownSystemHooks?.() }, { stop: () => shutdownRunners() }]
 });
 

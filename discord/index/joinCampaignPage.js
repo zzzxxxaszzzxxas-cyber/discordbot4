@@ -55,6 +55,10 @@ ${navBar("/join-campaign")}
         <div class="mini-stat"><span>ดึงเข้าสำเร็จ</span><b id="joinedUsers">0</b></div>
         <div class="mini-stat"><span>อยู่แล้ว</span><b id="alreadyUsers">0</b></div>
         <div class="mini-stat"><span>ไม่สำเร็จ</span><b id="failedUsers">0</b></div>
+        <div class="mini-stat"><span>ตรวจเช็กแล้ว</span><b id="processedUsers">0</b></div>
+        <div class="mini-stat"><span>ลองใหม่ (Retry)</span><b id="retryCount">0</b></div>
+        <div class="mini-stat"><span>Concurrency</span><b id="currentConcurrency">8</b></div>
+        <div class="mini-stat"><span>Throughput</span><b id="currentThroughput">0 /วิ</b></div>
     </div>
 
     <div id="liveProgressBarContainer" style="margin: 14px 0; display: none;">
@@ -123,14 +127,26 @@ function setFreshness(message, isError){
     el.textContent=message;
     el.style.color=isError?'var(--yellow2)':'var(--text3)';
 }
+const statusLabels={
+    idle:'พร้อมใช้งาน',
+    pending:'กำลังเริ่ม',
+    stage:'กำลังเตรียมงาน',
+    running:'กำลังทำงาน',
+    completed:'เสร็จสิ้นสมบูรณ์',
+    partial:'สำเร็จบางส่วน',
+    server_full:'เซิร์ฟเวอร์เต็ม (Guild Full)',
+    stopping:'กำลังหยุด',
+    stopped:'หยุดแล้ว',
+    failed:'เกิดข้อผิดพลาด'
+};
 function renderSummary(summary){
     if(!summary){
         setText('campaignStatus','ยังไม่มีงาน');
         setText('activeStatusBadge','พร้อมใช้งาน');
         return;
     }
-    const statusLabels={idle:'พร้อมใช้งาน',pending:'กำลังเริ่ม',running:'กำลังทำงาน',completed:'เสร็จสิ้นสมบูรณ์',stopping:'กำลังหยุด',stopped:'หยุดแล้ว',failed:'เกิดข้อผิดพลาด'};
-    const statusText = statusLabels[summary.status] || summary.status || '-';
+    const rawStatus = String(summary.status || '').toLowerCase();
+    const statusText = statusLabels[rawStatus] || summary.status || '-';
     setText('campaignStatus', statusText);
     setText('activeStatusBadge', statusText);
     setText('jobMode', summary.mode || summary.mode_name || '-');
@@ -140,6 +156,11 @@ function renderSummary(summary){
     setText('joinedUsers', summary.joined_count || summary.joined || 0);
     setText('alreadyUsers', summary.already_member_count || summary.alreadyMember || 0);
     setText('failedUsers', summary.failed_count || summary.failed || 0);
+    setText('processedUsers', summary.processed_count || summary.processedCount || 0);
+    setText('retryCount', summary.retry_count || summary.retryCount || 0);
+    setText('currentConcurrency', summary.current_concurrency || summary.currentConcurrency || 8);
+    const tp = summary.current_throughput ?? summary.currentThroughput ?? 0;
+    setText('currentThroughput', Number(tp).toFixed(1) + ' /วิ');
 
     const requested = Number(summary.requested_amount || summary.maxUsers || 0);
     const joined = Number(summary.joined_count || summary.joined || 0);
@@ -164,10 +185,14 @@ function renderSummary(summary){
         'ต้นทาง: '+(summary.source_guild_name || summary.source_guild_id || 'ทุกเซิร์ฟเวอร์ในระบบ'),
         'เป้าหมาย: '+joined+' / '+requested+' คน',
         'อยู่แล้ว: '+(summary.already_member_count || summary.alreadyMember || 0)+' คน',
-        'ไม่สำเร็จ: '+(summary.failed_count || summary.failed || 0)+' คน'
+        'ไม่สำเร็จ: '+(summary.failed_count || summary.failed || 0)+' คน',
+        'ตรวจเช็กแล้ว: '+(summary.processed_count || summary.processedCount || 0)+' คน',
+        'ลองใหม่ (Retry): '+(summary.retry_count || summary.retryCount || 0)+' ครั้ง',
+        'Concurrency: '+(summary.current_concurrency || summary.currentConcurrency || 8),
+        'Throughput: '+Number(tp).toFixed(1)+' คน/วินาที'
     ];
-    if(summary.error_summary){
-        lines.push('', 'ข้อความบันทึก: '+summary.error_summary);
+    if(summary.error_summary || summary.lastError || summary.last_error){
+        lines.push('', 'ข้อความบันทึก: '+(summary.error_summary || summary.lastError || summary.last_error));
     }
     const logEl = document.getElementById('campaignLog');
     if (logEl) logEl.innerHTML=lines.map(esc).join('<br>');
@@ -183,14 +208,24 @@ function renderHistory(history){
     tbody.innerHTML = history.map(item => {
         const start = item.started_at ? new Date(item.started_at).toLocaleTimeString('th-TH') : '-';
         const finish = item.completed_at ? new Date(item.completed_at).toLocaleTimeString('th-TH') : '-';
-        const statusColors = { completed: '#57f287', failed: '#ed4245', running: '#5865f2', stopped: '#fee75c' };
-        const color = statusColors[item.status] || 'var(--text3)';
+        const statusColors = {
+            completed: '#57f287',
+            partial: '#fee75c',
+            server_full: '#fee75c',
+            failed: '#ed4245',
+            running: '#5865f2',
+            stage: '#5865f2',
+            stopped: '#fee75c'
+        };
+        const rawStatus = String(item.status || '').toLowerCase();
+        const color = statusColors[rawStatus] || 'var(--text3)';
+        const label = statusLabels[rawStatus] || item.status || '-';
         return '<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding:8px;font-family:monospace;">' + esc(String(item.id || '').slice(0, 16)) + '</td>' +
             '<td style="padding:8px;">' + esc(item.mode || '-') + '</td>' +
             '<td style="padding:8px;">' + esc(item.target_guild_name || item.target_guild_id || '-') + '</td>' +
             '<td style="padding:8px;font-weight:600;">' + esc(item.joined_count || 0) + ' / ' + esc(item.requested_amount || 0) + '</td>' +
-            '<td style="padding:8px;"><span style="color:' + color + ';font-weight:600;">' + esc(item.status || '-') + '</span></td>' +
+            '<td style="padding:8px;"><span style="color:' + color + ';font-weight:600;">' + esc(label) + '</span></td>' +
             '<td style="padding:8px;color:var(--text3);">' + esc(start) + '</td>' +
             '<td style="padding:8px;color:var(--text3);">' + esc(finish) + '</td>' +
         '</tr>';

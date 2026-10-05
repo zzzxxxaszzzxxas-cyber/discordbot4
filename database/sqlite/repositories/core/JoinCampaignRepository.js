@@ -14,40 +14,56 @@ class JoinCampaignRepository {
     // --- Job operations ---
     createJob(data) {
         const now = Date.now();
+        const targetStatus = String(data.status || "STAGE");
+        const isActiveStatus = ["RUNNING", "STAGE"].includes(targetStatus);
+
         const stmt = this.db.prepare(`
             INSERT INTO join_campaign_jobs (
                 id, mode, source_guild_id, source_guild_name, target_guild_id, target_guild_name,
                 status, requested_amount, selected_amount, joined_count, already_count, failed_count,
-                processed_count, retry_count, current_concurrency, recovery_count, candidate_cursor, last_error,
+                processed_count, retry_count, current_concurrency, current_throughput, recovery_count, candidate_cursor, last_error,
                 started_by_user_id, created_at, updated_at, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
-        stmt.run(
-            String(data.id),
-            String(data.mode || "ALL_TO_TARGET"),
-            data.sourceGuildId ? String(data.sourceGuildId) : null,
-            data.sourceGuildName ? String(data.sourceGuildName) : null,
-            String(data.targetGuildId),
-            data.targetGuildName ? String(data.targetGuildName) : null,
-            String(data.status || "STAGE"),
-            Number(data.requestedAmount) || 0,
-            Number(data.selectedAmount) || 0,
-            Number(data.joinedCount) || 0,
-            Number(data.alreadyCount) || 0,
-            Number(data.failedCount) || 0,
-            Number(data.processedCount) || 0,
-            Number(data.retryCount) || 0,
-            Number(data.currentConcurrency) || 8,
-            Number(data.recoveryCount) || 0,
-            data.candidateCursor ? String(data.candidateCursor) : null,
-            data.lastError ? String(data.lastError) : null,
-            data.startedByUserId ? String(data.startedByUserId) : null,
-            Number(data.createdAt) || now,
-            Number(data.updatedAt) || now,
-            data.completedAt ? Number(data.completedAt) : null
-        );
+        const runCreate = this.db.transaction(() => {
+            if (isActiveStatus) {
+                const active = this.findActiveRunningJob();
+                if (active) {
+                    const err = new Error("มีงานดึงสมาชิกกำลังทำงานอยู่แล้วในระบบ");
+                    err.code = "ACTIVE_CAMPAIGN_EXISTS";
+                    throw err;
+                }
+            }
 
+            stmt.run(
+                String(data.id),
+                String(data.mode || "ALL_TO_TARGET"),
+                data.sourceGuildId ? String(data.sourceGuildId) : null,
+                data.sourceGuildName ? String(data.sourceGuildName) : null,
+                String(data.targetGuildId),
+                data.targetGuildName ? String(data.targetGuildName) : null,
+                targetStatus,
+                Number(data.requestedAmount) || 0,
+                Number(data.selectedAmount) || 0,
+                Number(data.joinedCount) || 0,
+                Number(data.alreadyCount) || 0,
+                Number(data.failedCount) || 0,
+                Number(data.processedCount) || 0,
+                Number(data.retryCount) || 0,
+                Number(data.currentConcurrency) || 8,
+                Number(data.currentThroughput) || 0.0,
+                Number(data.recoveryCount) || 0,
+                data.candidateCursor ? String(data.candidateCursor) : null,
+                data.lastError ? String(data.lastError) : null,
+                data.startedByUserId ? String(data.startedByUserId) : null,
+                Number(data.createdAt) || now,
+                Number(data.updatedAt) || now,
+                data.completedAt ? Number(data.completedAt) : null
+            );
+        });
+
+        runCreate();
         return this.findJobById(data.id);
     }
 
@@ -122,6 +138,11 @@ class JoinCampaignRepository {
         if (updates.currentConcurrency !== undefined) {
             setClauses.push("current_concurrency = ?");
             params.push(Number(updates.currentConcurrency));
+        }
+        const throughput = updates.currentThroughput !== undefined ? updates.currentThroughput : updates.current_throughput;
+        if (throughput !== undefined) {
+            setClauses.push("current_throughput = ?");
+            params.push(Number(throughput) || 0.0);
         }
         const recCount = updates.recoveryCount !== undefined ? updates.recoveryCount : updates.recovery_count;
         if (recCount !== undefined) {
@@ -214,7 +235,11 @@ class JoinCampaignRepository {
             SET status = 'processing', leased_until = ?, updated_at = ?
             WHERE id = (
                 SELECT id FROM join_campaign_items
-                WHERE campaign_id = ? AND (status = 'pending' OR (status = 'processing' AND leased_until < ?))
+                WHERE campaign_id = ? AND (
+                    (status = 'pending' AND (leased_until IS NULL OR leased_until <= ?))
+                    OR
+                    (status = 'processing' AND leased_until < ?)
+                )
                 ORDER BY id ASC
                 LIMIT 1
             )
@@ -222,16 +247,20 @@ class JoinCampaignRepository {
         `);
 
         try {
-            const row = updateStmt.get(leaseUntil, now, String(campaignId), now);
+            const row = updateStmt.get(leaseUntil, now, String(campaignId), now, now);
             return row ? this._hydrateItem(row) : null;
         } catch (_) {
             const findStmt = this.db.prepare(`
                 SELECT id FROM join_campaign_items
-                WHERE campaign_id = ? AND (status = 'pending' OR (status = 'processing' AND leased_until < ?))
+                WHERE campaign_id = ? AND (
+                    (status = 'pending' AND (leased_until IS NULL OR leased_until <= ?))
+                    OR
+                    (status = 'processing' AND leased_until < ?)
+                )
                 ORDER BY id ASC
                 LIMIT 1
             `);
-            const item = findStmt.get(String(campaignId), now);
+            const item = findStmt.get(String(campaignId), now, now);
             if (!item) return null;
 
             this.db.prepare(`
@@ -368,6 +397,7 @@ class JoinCampaignRepository {
             processedCount: row.processed_count,
             retryCount: row.retry_count,
             currentConcurrency: row.current_concurrency ?? 8,
+            currentThroughput: Number(row.current_throughput || 0),
             recoveryCount: row.recovery_count ?? 0,
             candidateCursor: row.candidate_cursor ?? null,
             lastError: row.last_error ?? null,

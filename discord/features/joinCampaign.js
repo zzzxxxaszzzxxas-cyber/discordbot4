@@ -55,7 +55,10 @@ function isSnowflake(value) {
 
 function isGuildAllowed(guildId, config = getJoinCampaignConfig()) {
     if (!isSnowflake(guildId)) return false;
-    if (!(config.allowedGuilds instanceof Set) || config.allowedGuilds.size === 0) return false;
+    // Per owner decision: If allowedGuilds is not configured in .env, any guild bot belongs to is allowed
+    if (!(config.allowedGuilds instanceof Set) || config.allowedGuilds.size === 0) {
+        return true;
+    }
     return config.allowedGuilds.has(String(guildId));
 }
 

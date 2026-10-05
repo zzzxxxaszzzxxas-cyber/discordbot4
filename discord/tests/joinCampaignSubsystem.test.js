@@ -9,10 +9,12 @@ const { buildPanelPayload, IDS: PANEL_IDS } = require("../features/joinCampaign/
 const { buildPreflightConfirmationPayload, IDS: CONFIRM_IDS } = require("../features/joinCampaign/ui/confirmationBuilder");
 const joinCampaignService = require("../features/joinCampaign/services/joinCampaignService");
 const { isJoinCampaignInteraction } = require("../features/joinCampaign/handlers/interactionRouter");
-const { isValidDiscordWebhookUrl } = require("../features/joinCampaign/worker/batchLogger");
+const { isValidDiscordWebhookUrl, sanitizeUserFacingError } = require("../features/joinCampaign/worker/batchLogger");
 const { runPreflight } = require("../features/joinCampaign/services/preflightService");
+const { streamCandidates } = require("../features/joinCampaign/services/candidateQueryService");
 const campaignWorker = require("../features/joinCampaign/worker/campaignWorker");
 const { runStartupRecovery } = require("../features/joinCampaign/recovery/startupRecovery");
+const discordApi = require("../verification/utils/discordAPI");
 const database = require("../../database/index");
 
 test.beforeEach(() => {
@@ -370,7 +372,8 @@ test("Join Campaign: Adaptive worker halts immediately on Discord Guild Full err
         client: mockClient,
         repository: repo,
         tokenManager: mockTokenManager,
-        discord: mockDiscordApi
+        discord: mockDiscordApi,
+        targetMemberIds: new Set()
     });
 
     await campaignWorker.waitForCompletion();
@@ -441,4 +444,365 @@ test("Join Campaign: Adaptive worker skips members already in target guild witho
     assert.equal(finishedJob.alreadyCount, 1);
     // Only new_user should have called addMemberToGuild
     assert.equal(apiCalls, 1);
+});
+
+test("Join Campaign: Quota overshoot protection - Quota=1 with concurrency=8 strictly joins at most 1 member", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `overshoot_test_${Date.now()}`;
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Quota Target",
+        status: "RUNNING",
+        requestedAmount: 1, // Only 1 wanted
+        selectedAmount: 8,
+        joinedCount: 0,
+        currentConcurrency: 8
+    });
+
+    let joinCalls = 0;
+    const mockDiscordApi = {
+        addMemberToGuild: async () => {
+            joinCalls++;
+            // Small artificial latency to simulate real network request
+            await new Promise(r => setTimeout(r, 20));
+            return { ok: true, status: 201 };
+        }
+    };
+
+    // 8 candidates available
+    const candidates = [];
+    for (let i = 1; i <= 8; i++) {
+        candidates.push({ discord: { userId: `user_overshoot_${i}` }, tokenField: "oauth" });
+    }
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => candidates,
+        getAccessToken: async () => ({ accessToken: "mock_token" })
+    };
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", { id: "123456789012345678", name: "Quota Target" }]
+            ])
+        }
+    };
+
+    await campaignWorker.startWorker({
+        job,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        discord: mockDiscordApi,
+        targetMemberIds: new Set()
+    });
+
+    await campaignWorker.waitForCompletion();
+
+    const finishedJob = repo.findJobById(testJobId);
+    // Quota overshoot MUST NOT occur: joinedCount must be exactly 1!
+    assert.equal(finishedJob.joinedCount, 1);
+    assert.equal(finishedJob.status, "COMPLETED");
+});
+
+test("Join Campaign: claimNextPendingItem respects retry delay leased_until", () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `retry_delay_${Date.now()}`;
+
+    repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 5,
+        selectedAmount: 5,
+        joinedCount: 0
+    });
+
+    // Create a candidate item
+    repo.createItems(testJobId, [{ userId: "retry_delayed_user", tokenField: "oauth" }]);
+
+    // Schedule retry with delay of 10 seconds into the future
+    repo.incrementItemAttempt(testJobId, "retry_delayed_user", "rate_limited", 10000);
+
+    // Attempt to claim: should return null because leased_until > now
+    const claimedBeforeDelay = repo.claimNextPendingItem(testJobId);
+    assert.equal(claimedBeforeDelay, null);
+
+    // Create a new normal pending item
+    repo.createItems(testJobId, [{ userId: "fresh_pending_user", tokenField: "oauth" }]);
+
+    // Claim: should claim the fresh user, NOT the delayed user
+    const claimedFresh = repo.claimNextPendingItem(testJobId);
+    assert.ok(claimedFresh);
+    assert.equal(claimedFresh.userId, "fresh_pending_user");
+});
+
+test("Join Campaign: Atomic single active campaign lock in SQLite prevents two concurrent RUNNING/STAGE jobs", () => {
+    const repo = database.repositories.joinCampaign;
+    const jobId1 = `atomic_1_${Date.now()}`;
+    const jobId2 = `atomic_2_${Date.now()}`;
+
+    const job1 = repo.createJob({
+        id: jobId1,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 10,
+        selectedAmount: 10,
+        joinedCount: 0
+    });
+    assert.ok(job1);
+
+    // Attempting to create a second RUNNING job must fail atomically
+    assert.throws(() => {
+        repo.createJob({
+            id: jobId2,
+            mode: "ALL_TO_TARGET",
+            targetGuildId: "123456789012345678",
+            status: "RUNNING",
+            requestedAmount: 5,
+            selectedAmount: 5,
+            joinedCount: 0
+        });
+    }, (err) => {
+        return err.code === "ACTIVE_CAMPAIGN_EXISTS" || String(err.message).includes("UNIQUE constraint failed");
+    });
+
+    // Mark job1 as COMPLETED
+    repo.markJobCompleted(jobId1);
+
+    // Now creating another active job succeeds
+    const job2 = repo.createJob({
+        id: jobId2,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 5,
+        selectedAmount: 5,
+        joinedCount: 0
+    });
+    assert.ok(job2);
+    repo.markJobCompleted(jobId2);
+});
+
+test("Join Campaign: Worker fails closed and does not fallback to cache when target member fetch fails", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `fail_closed_${Date.now()}`;
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 5,
+        selectedAmount: 5,
+        joinedCount: 0
+    });
+
+    // Mock client where member fetch throws error
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    memberCount: 50,
+                    members: {
+                        fetch: async () => { throw new Error("Discord API 500: Internal Server Error"); },
+                        cache: new Map([["cached_user_1", {}]]) // Partial cache
+                    }
+                }]
+            ])
+        }
+    };
+
+    // startWorker must reject and fail-closed without using partial cache
+    await assert.rejects(async () => {
+        await campaignWorker.startWorker({
+            job,
+            client: mockClient,
+            repository: repo,
+            targetMemberIds: null // Force live query
+        });
+        await campaignWorker.waitForCompletion();
+    }, (err) => {
+        return String(err.message).includes("Fail-Closed");
+    });
+
+    const finishedJob = repo.findJobById(testJobId);
+    assert.equal(finishedJob.status, "FAILED");
+    assert.match(finishedJob.lastError, /Fail-Closed/);
+});
+
+test("Join Campaign: Candidate pagination continues to next batch when page has 0 usable candidates but hasMore is true", async () => {
+    let callCount = 0;
+    const mockTokenManager = {
+        listAccessTokenCandidates: async ({ afterId }) => {
+            callCount++;
+            if (callCount === 1) {
+                // Batch 1: returns empty array of candidates, but hasMore is true!
+                return { candidates: [], nextCursor: "cursor_batch_2", hasMore: true };
+            }
+            if (callCount === 2) {
+                // Batch 2: returns actual candidate!
+                return {
+                    candidates: [{ discord: { userId: "user_from_page_2" }, _id: "doc_page_2" }],
+                    nextCursor: "cursor_batch_3",
+                    hasMore: false
+                };
+            }
+            return { candidates: [], hasMore: false };
+        }
+    };
+
+    const dummyMode = { requiresSource: false };
+    const generator = streamCandidates({
+        mode: dummyMode,
+        tokenManager: mockTokenManager,
+        batchSize: 10
+    });
+
+    const collected = [];
+    for await (const item of generator) {
+        collected.push(item);
+    }
+
+    assert.equal(callCount, 2);
+    assert.equal(collected.length, 1);
+    assert.equal(collected[0].candidate.discord.userId, "user_from_page_2");
+});
+
+test("Join Campaign: Candidate exhaustion with 0 joined results in FAILED status, not COMPLETED", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `zero_joined_${Date.now()}`;
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 10,
+        selectedAmount: 1,
+        joinedCount: 0
+    });
+
+    // 1 candidate whose token retrieval fails
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => [
+            { discord: { userId: "user_fail_token" }, tokenField: "oauth" }
+        ],
+        getAccessToken: async () => null // Token missing/failed
+    };
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", { id: "123456789012345678", name: "Target" }]
+            ])
+        }
+    };
+
+    await campaignWorker.startWorker({
+        job,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        discord: { addMemberToGuild: async () => ({ ok: false }) },
+        targetMemberIds: new Set()
+    });
+
+    await campaignWorker.waitForCompletion();
+
+    const finishedJob = repo.findJobById(testJobId);
+    assert.equal(finishedJob.joinedCount, 0);
+    // When 0 joined and candidate pool is exhausted: must be FAILED, NOT COMPLETED!
+    assert.equal(finishedJob.status, "FAILED");
+});
+
+test("Join Campaign: processedCount counts unique users on first attempt, retryCount counts retries", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `metrics_test_${Date.now()}`;
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 1,
+        selectedAmount: 1,
+        joinedCount: 0
+    });
+
+    let attemptNumber = 0;
+    const mockDiscordApi = {
+        addMemberToGuild: async () => {
+            attemptNumber++;
+            if (attemptNumber === 1) {
+                // Return 429 on first try with 20ms retryAfter
+                return { ok: false, status: 429, retryAfter: 20 };
+            }
+            return { ok: true, status: 201 };
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => [
+            { discord: { userId: "user_metrics_1" }, tokenField: "oauth" }
+        ],
+        getAccessToken: async () => ({ accessToken: "mock_token" })
+    };
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", { id: "123456789012345678", name: "Target" }]
+            ])
+        }
+    };
+
+    await campaignWorker.startWorker({
+        job,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        discord: mockDiscordApi,
+        targetMemberIds: new Set()
+    });
+
+    await campaignWorker.waitForCompletion();
+
+    const finishedJob = repo.findJobById(testJobId);
+    assert.equal(finishedJob.joinedCount, 1);
+    // processedCount must count the 1 unique user, not 2 attempts
+    assert.equal(finishedJob.processedCount, 1);
+    // retryCount must record the retry attempt
+    assert.equal(finishedJob.retryCount, 1);
+});
+
+test("Join Campaign: sanitizeUserFacingError converts technical/database errors to polite human Thai", () => {
+    const sqliteErr = sanitizeUserFacingError("SQLITE_BUSY: database is locked");
+    assert.match(sqliteErr, /ฐานข้อมูลกำลังประมวลผลงานอื่นอยู่ชั่วคราว/);
+
+    const mongoErr = sanitizeUserFacingError("MongoServerSelectionError: connection timed out");
+    assert.match(mongoErr, /การเชื่อมต่อฐานข้อมูลหลักขัดข้องชั่วคราว/);
+
+    const abortErr = sanitizeUserFacingError("AbortError: operation was aborted");
+    assert.match(abortErr, /การเชื่อมต่อไปยัง Discord เกิดความล่าช้า/);
+
+    const failClosedErr = sanitizeUserFacingError("ไม่สามารถตรวจสอบรายชื่อสมาชิกในเซิร์ฟเวอร์เป้าหมายได้ครบถ้วน (Fail-Closed)");
+    assert.match(failClosedErr, /ไม่สามารถตรวจสอบรายชื่อสมาชิก/);
+
+    const cleanMsg = sanitizeUserFacingError("เซิร์ฟเวอร์ปลายทางมีสมาชิกถึงจำนวนสูงสุดแล้ว");
+    assert.equal(cleanMsg, "เซิร์ฟเวอร์ปลายทางมีสมาชิกถึงจำนวนสูงสุดแล้ว");
+});
+
+test("Join Campaign: discordApi.addMemberToGuild accepts callerManagedRetry option and handles validation", async () => {
+    // Missing credentials fails fast with status 400 without looping
+    const resMissing = await discordApi.addMemberToGuild(null, "123", "token", { callerManagedRetry: true });
+    assert.equal(resMissing.ok, false);
+    assert.equal(resMissing.status, 400);
+    assert.equal(resMissing.error, "Missing guildId/userId/accessToken");
 });

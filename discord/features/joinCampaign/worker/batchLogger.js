@@ -91,6 +91,37 @@ async function sendBatchLog({
     await sendRawWebhook(webhookUrl, payload);
 }
 
+function sanitizeUserFacingError(reason) {
+    if (!reason || typeof reason !== "string") return "เกิดข้อผิดพลาดในการเชื่อมต่อ";
+    const lower = reason.toLowerCase();
+    if (lower.includes("sqlite_busy") || lower.includes("database is locked")) {
+        return "ฐานข้อมูลกำลังประมวลผลงานอื่นอยู่ชั่วคราว กรุณารอสักครู่แล้วลองใหม่ครับ";
+    }
+    if (lower.includes("mongoserverselectionerror") || lower.includes("mongonetworkerror") || lower.includes("topology was destroyed")) {
+        return "การเชื่อมต่อฐานข้อมูลหลักขัดข้องชั่วคราว";
+    }
+    if (lower.includes("aborterror") || lower.includes("etimedout") || lower.includes("econnreset") || lower.includes("econnrefused")) {
+        return "การเชื่อมต่อไปยัง Discord เกิดความล่าช้าหรือหลุดการเชื่อมต่อชั่วคราว";
+    }
+    if (lower.includes("fail-closed") || lower.includes("ตรวจสอบรายชื่อสมาชิก")) {
+        return "ไม่สามารถตรวจสอบรายชื่อสมาชิกในเซิร์ฟเวอร์เป้าหมายได้ครบถ้วน (ระบบหยุดเพื่อความปลอดภัย)";
+    }
+    if (lower.includes("guild_full") || lower.includes("สมาชิกเต็ม")) {
+        return "เซิร์ฟเวอร์ปลายทางมีสมาชิกถึงจำนวนสูงสุดแล้ว";
+    }
+    if (lower.includes("active_campaign_exists") || lower.includes("มีงานดึงสมาชิกกำลังทำงาน")) {
+        return "มีงานดึงสมาชิกกำลังทำงานอยู่แล้วในระบบ กรุณารอให้งานเดิมเสร็จก่อนนะครับ";
+    }
+    if (lower.includes("token_unavailable") || lower.includes("invalid_grant")) {
+        return "โทเค็นสำหรับดึงสมาชิกไม่พร้อมใช้งานหรือหมดอายุ";
+    }
+    // If reason looks like a technical error / stack trace:
+    if (reason.includes("Error:") || reason.includes("at ") || reason.includes("SQLITE_") || reason.includes("ENOENT")) {
+        return "ระบบขัดข้องชั่วคราว ไม่สามารถดำเนินการต่อได้";
+    }
+    return reason;
+}
+
 async function sendFinalSummaryEmbed({
     webhookUrl,
     mode,
@@ -128,7 +159,8 @@ async function sendFinalSummaryEmbed({
     } else if (finalStatus === "FAILED") {
         color = 0xED4245; // Red
         title = `${emoji.error} สรุปผลการดึงสมาชิกเข้าเซิร์ฟเวอร์ (เกิดข้อผิดพลาด)`;
-        description = `การดึงสมาชิกหยุดชะงักเนื่องจาก: ${statusReason || "เกิดข้อผิดพลาดในการเชื่อมต่อ"}`;
+        const friendlyReason = sanitizeUserFacingError(statusReason);
+        description = `การดึงสมาชิกหยุดชะงักเนื่องจาก: ${friendlyReason}`;
         statusLabel = "เกิดข้อผิดพลาด";
     }
 
@@ -218,5 +250,6 @@ module.exports = {
     formatDurationThai,
     sendRawWebhook,
     sendBatchLog,
-    sendFinalSummaryEmbed
+    sendFinalSummaryEmbed,
+    sanitizeUserFacingError
 };

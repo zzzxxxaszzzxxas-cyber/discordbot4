@@ -108,29 +108,41 @@ class JoinCampaignService {
         const { preflight } = session;
 
         // Persist initial job in SQLite (Notice: webhookUrl is NOT stored in SQLite)
-        const job = repository.createJob({
-            id: jobId,
-            mode: mode.id,
-            sourceGuildId: preflight.sourceGuildId,
-            sourceGuildName: preflight.sourceGuildName,
-            targetGuildId: preflight.targetGuildId,
-            targetGuildName: preflight.targetGuildName,
-            status: "RUNNING",
-            requestedAmount: preflight.requestedQuota,
-            selectedAmount: preflight.readyCount,
-            joinedCount: 0,
-            alreadyCount: 0,
-            failedCount: 0,
-            processedCount: 0,
-            retryCount: 0,
-            currentConcurrency: 8,
-            recoveryCount: 0,
-            candidateCursor: null,
-            lastError: null,
-            startedByUserId: session.startedByUserId,
-            createdAt: Date.now(),
-            updatedAt: Date.now()
-        });
+        let job;
+        try {
+            job = repository.createJob({
+                id: jobId,
+                mode: mode.id,
+                sourceGuildId: preflight.sourceGuildId,
+                sourceGuildName: preflight.sourceGuildName,
+                targetGuildId: preflight.targetGuildId,
+                targetGuildName: preflight.targetGuildName,
+                status: "RUNNING",
+                requestedAmount: preflight.requestedQuota,
+                selectedAmount: preflight.readyCount,
+                joinedCount: 0,
+                alreadyCount: 0,
+                failedCount: 0,
+                processedCount: 0,
+                retryCount: 0,
+                currentConcurrency: 8,
+                currentThroughput: 0.0,
+                recoveryCount: 0,
+                candidateCursor: null,
+                lastError: null,
+                startedByUserId: session.startedByUserId,
+                createdAt: Date.now(),
+                updatedAt: Date.now()
+            });
+        } catch (err) {
+            if (err?.code === "ACTIVE_CAMPAIGN_EXISTS" || String(err?.message || "").includes("UNIQUE constraint failed")) {
+                return {
+                    ok: false,
+                    error: "ตอนนี้มีงานดึงสมาชิกกำลังทำงานอยู่ กรุณารอให้งานเดิมเสร็จก่อนนะครับ"
+                };
+            }
+            throw err;
+        }
 
         // Retain webhook in memory for active campaign
         if (session.webhookUrl) {
@@ -223,6 +235,9 @@ class JoinCampaignService {
                 retryCount: job.retryCount,
                 retry_count: job.retryCount,
                 currentConcurrency: job.currentConcurrency,
+                current_concurrency: job.currentConcurrency,
+                currentThroughput: job.currentThroughput || 0,
+                current_throughput: job.currentThroughput || 0,
                 createdAt: job.createdAt,
                 created_at: job.createdAt,
                 started_at: job.createdAt,
@@ -271,6 +286,10 @@ class JoinCampaignService {
             processed_count: job.processedCount,
             retryCount: job.retryCount,
             retry_count: job.retryCount,
+            currentConcurrency: job.currentConcurrency,
+            current_concurrency: job.currentConcurrency,
+            currentThroughput: job.currentThroughput || 0,
+            current_throughput: job.currentThroughput || 0,
             createdAt: job.createdAt,
             created_at: job.createdAt,
             started_at: job.createdAt,

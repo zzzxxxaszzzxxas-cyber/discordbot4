@@ -948,7 +948,7 @@ function validateBotCanUseChannel({ botMember, roles, channel }) {
    Guild Join / Role
 ============================================================================= */
 
-async function addMemberToGuild(guildId, userId, accessToken) {
+async function addMemberToGuild(guildId, userId, accessToken, options = {}) {
     if (!guildId || !userId || !accessToken) {
         return {
             ok: false,
@@ -965,17 +965,42 @@ async function addMemberToGuild(guildId, userId, accessToken) {
         };
     }
 
-    const res = await fetchWithRetry(`/guilds/${guildId}/members/${userId}`, {
-        method: "PUT",
-        headers: {
-            Authorization: `Bot ${getBotToken()}`,
-            "Content-Type": "application/json",
-            "X-Audit-Log-Reason": encodeURIComponent("OAuth2 Verification guilds.join")
-        },
-        body: JSON.stringify({
-            access_token: accessToken
-        })
-    });
+    const callerManaged = Boolean(options?.callerManagedRetry);
+    const retries = callerManaged ? 1 : (Number(options?.retries) || 3);
+
+    const headers = {
+        Authorization: `Bot ${getBotToken()}`,
+        "Content-Type": "application/json",
+        "X-Audit-Log-Reason": encodeURIComponent(options?.auditReason || "OAuth2 Verification guilds.join")
+    };
+
+    const bodyObj = {
+        access_token: accessToken
+    };
+    if (Array.isArray(options?.roles) && options.roles.length > 0) {
+        bodyObj.roles = options.roles;
+    }
+
+    let res;
+    try {
+        res = await fetchWithRetry(`/guilds/${guildId}/members/${userId}`, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify(bodyObj),
+            retries,
+            timeoutMs: options?.timeoutMs || 10000
+        });
+    } catch (err) {
+        if (callerManaged) {
+            return {
+                ok: false,
+                status: Number(err?.status) || 0,
+                error: err,
+                retryable: err?.retryable !== false
+            };
+        }
+        throw err;
+    }
 
     if (res.status === 201 || res.status === 204) {
         return {
@@ -985,10 +1010,13 @@ async function addMemberToGuild(guildId, userId, accessToken) {
     }
 
     const error = await readError(res);
+    const retryAfter = parseRetryAfterMs(res);
 
     return {
         ok: false,
         status: res.status,
+        retryAfter,
+        headers: res.headers,
         error
     };
 }

@@ -13,31 +13,38 @@ async function* streamCandidates({
     let afterId = startCursor || null;
     let hasMore = true;
     const tracker = seenUsers instanceof Set ? seenUsers : new Set();
-    const sourceGuildId = mode.requiresSource ? baseConfig.sourceGuildId : null;
+    const sourceGuildId = mode?.requiresSource ? baseConfig.sourceGuildId : null;
+    const allowAllGuilds = !mode?.requiresSource;
+    const additionalMongoFilter = typeof mode?.buildMongoFilter === "function" ? mode.buildMongoFilter(baseConfig) : null;
 
     while (hasMore) {
         const page = await tokenManager.listAccessTokenCandidates({
             requiredScopes: ["guilds.join"],
             sourceGuildId,
             targetGuildId: baseConfig.targetGuildId,
-            allowAllGuilds: !mode.requiresSource,
+            allowAllGuilds,
+            additionalFilter: additionalMongoFilter,
             limit: batchSize,
             afterId,
             seenUsers: tracker
         });
 
         const candidates = Array.isArray(page) ? page : (page?.candidates || []);
-        if (candidates.length === 0) {
-            break;
-        }
 
         for (const candidate of candidates) {
             const cursor = candidate._id || candidate.recordId ? String(candidate._id || candidate.recordId) : null;
             yield { candidate, cursor };
         }
 
-        afterId = page.nextCursor || (candidates[candidates.length - 1]?._id ? String(candidates[candidates.length - 1]._id) : null);
-        hasMore = Boolean(page.hasMore && afterId);
+        const nextCursor = page.nextCursor || (candidates.length > 0 && candidates[candidates.length - 1]?._id ? String(candidates[candidates.length - 1]._id) : null);
+
+        // Break if cursor did not advance or no next cursor
+        if (!nextCursor || nextCursor === afterId) {
+            break;
+        }
+
+        afterId = nextCursor;
+        hasMore = Boolean(page.hasMore);
     }
 }
 

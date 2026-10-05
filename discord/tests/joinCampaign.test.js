@@ -332,32 +332,26 @@ test("startJoinCampaign rejects disabled config before creating an active job", 
     t.assert.equal(joinCampaign.getJoinCampaignStatus().active, null);
 });
 
-test("join campaign is default-off and requires an explicit guild allowlist", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
+test("join campaign is default-off and allows guilds when allowlist is unconfigured or matches allowlist", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
     const defaults = joinCampaign.getJoinCampaignConfig({});
     t.assert.equal(defaults.enabled, false);
     t.assert.equal(defaults.allowedGuilds.size, 0);
+
+    // Unconfigured allowlist permits valid snowflake
     t.assert.equal(joinCampaign.isGuildAllowed("123456789012345678", {
         enabled: true,
         allowedGuilds: new Set()
-    }), false);
+    }), true);
 
-    await t.assert.rejects(
-        joinCampaign.executeJoinCampaign({
-            targetGuildId: "123456789012345678",
-            candidateDocs: [],
-            config: {
-                enabled: true,
-                allowedGuilds: new Set(),
-                maxUsers: 10,
-                delayMs: 0,
-                progressEvery: 10,
-                refreshMarginMs: 60 * 60 * 1000,
-                failMax: 5
-            },
-            sendWebhook: async () => true
-        }),
-        error => error?.code === "CAMPAIGN_ALLOWLIST_REQUIRED" && error?.status === 503
-    );
+    // Configured allowlist restricts to allowlist entries
+    t.assert.equal(joinCampaign.isGuildAllowed("123456789012345678", {
+        enabled: true,
+        allowedGuilds: new Set(["999999999999999999"])
+    }), false);
+    t.assert.equal(joinCampaign.isGuildAllowed("999999999999999999", {
+        enabled: true,
+        allowedGuilds: new Set(["999999999999999999"])
+    }), true);
 });
 
 test("join campaign follows database cursor batches until every OAuth user is scanned", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
