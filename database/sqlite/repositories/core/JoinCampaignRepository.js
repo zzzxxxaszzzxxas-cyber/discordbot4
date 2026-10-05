@@ -18,8 +18,9 @@ class JoinCampaignRepository {
             INSERT INTO join_campaign_jobs (
                 id, mode, source_guild_id, source_guild_name, target_guild_id, target_guild_name,
                 status, requested_amount, selected_amount, joined_count, already_count, failed_count,
-                processed_count, retry_count, webhook_url, started_by_user_id, created_at, updated_at, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                processed_count, retry_count, current_concurrency, recovery_count, candidate_cursor, last_error,
+                started_by_user_id, created_at, updated_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         stmt.run(
@@ -37,7 +38,10 @@ class JoinCampaignRepository {
             Number(data.failedCount) || 0,
             Number(data.processedCount) || 0,
             Number(data.retryCount) || 0,
-            data.webhookUrl ? String(data.webhookUrl) : null,
+            Number(data.currentConcurrency) || 8,
+            Number(data.recoveryCount) || 0,
+            data.candidateCursor ? String(data.candidateCursor) : null,
+            data.lastError ? String(data.lastError) : null,
             data.startedByUserId ? String(data.startedByUserId) : null,
             Number(data.createdAt) || now,
             Number(data.updatedAt) || now,
@@ -78,8 +82,8 @@ class JoinCampaignRepository {
         return this.updateJob(id, { status: "COMPLETED", completedAt: Date.now() });
     }
 
-    markJobFailed(id) {
-        return this.updateJob(id, { status: "FAILED", completedAt: Date.now() });
+    markJobFailed(id, lastError = null) {
+        return this.updateJob(id, { status: "FAILED", lastError, completedAt: Date.now() });
     }
 
     updateJobProgress(id, progress = {}) {
@@ -115,6 +119,23 @@ class JoinCampaignRepository {
             setClauses.push("retry_count = ?");
             params.push(Number(updates.retryCount));
         }
+        if (updates.currentConcurrency !== undefined) {
+            setClauses.push("current_concurrency = ?");
+            params.push(Number(updates.currentConcurrency));
+        }
+        const recCount = updates.recoveryCount !== undefined ? updates.recoveryCount : updates.recovery_count;
+        if (recCount !== undefined) {
+            setClauses.push("recovery_count = ?");
+            params.push(Number(recCount));
+        }
+        if (updates.candidateCursor !== undefined) {
+            setClauses.push("candidate_cursor = ?");
+            params.push(updates.candidateCursor ? String(updates.candidateCursor) : null);
+        }
+        if (updates.lastError !== undefined) {
+            setClauses.push("last_error = ?");
+            params.push(updates.lastError ? String(updates.lastError) : null);
+        }
         if (updates.completedAt !== undefined) {
             setClauses.push("completed_at = ?");
             params.push(updates.completedAt ? Number(updates.completedAt) : null);
@@ -144,11 +165,21 @@ class JoinCampaignRepository {
             FROM join_campaign_jobs
         `).get();
 
+        const totalCampaigns = Number(totals?.total_campaigns) || 0;
+        const totalJoined = Number(totals?.total_joined) || 0;
+        const totalProcessed = Number(totals?.total_processed) || 0;
+        const totalFailed = Number(totals?.total_failed) || 0;
+        const successRatePercent = totalProcessed > 0
+            ? Math.round((totalJoined / totalProcessed) * 100)
+            : (totalCampaigns > 0 ? 100 : 0);
+
         return {
-            totalCampaigns: Number(totals?.total_campaigns) || 0,
-            totalJoined: Number(totals?.total_joined) || 0,
-            totalProcessed: Number(totals?.total_processed) || 0,
-            totalFailed: Number(totals?.total_failed) || 0
+            totalJobs: totalCampaigns,
+            totalCampaigns,
+            totalJoined,
+            totalProcessed,
+            totalFailed,
+            successRatePercent
         };
     }
 
@@ -218,19 +249,45 @@ class JoinCampaignRepository {
         const now = Date.now();
         this.db.prepare(`
             UPDATE join_campaign_items
-            SET status = ?, last_error = ?, leased_until = 0, updated_at = ?
+            SET status = ?, last_error = ?, leased_until = 0, completed_at = ?, updated_at = ?
             WHERE campaign_id = ? AND user_id = ?
-        `).run(String(status), error ? String(error) : null, now, String(campaignId), String(userId));
+        `).run(String(status), error ? String(error) : null, now, now, String(campaignId), String(userId));
     }
 
-    releaseExpiredLeases(campaignId) {
+    incrementItemAttempt(campaignId, userId, error = null, retryDelayMs = 0) {
+        const now = Date.now();
+        const leaseUntil = now + retryDelayMs;
+        this.db.prepare(`
+            UPDATE join_campaign_items
+            SET attempts = attempts + 1, last_error = ?, status = 'pending', leased_until = ?, updated_at = ?
+            WHERE campaign_id = ? AND user_id = ?
+        `).run(error ? String(error) : null, leaseUntil, now, String(campaignId), String(userId));
+    }
+
+    releaseExpiredLeases(campaignId, force = false) {
         const now = Date.now();
         const info = this.db.prepare(`
             UPDATE join_campaign_items
             SET status = 'pending', leased_until = 0, updated_at = ?
-            WHERE campaign_id = ? AND status = 'processing' AND leased_until < ?
-        `).run(now, String(campaignId), now);
+            WHERE campaign_id = ? AND status = 'processing' ${force ? "" : "AND leased_until < ?"}
+        `).run(...(force ? [now, String(campaignId)] : [now, String(campaignId), now]));
         return info.changes;
+    }
+
+    countPendingItems(campaignId) {
+        const row = this.db.prepare(`
+            SELECT COUNT(*) as count FROM join_campaign_items
+            WHERE campaign_id = ? AND (status = 'pending' OR status = 'processing')
+        `).get(String(campaignId));
+        return Number(row?.count) || 0;
+    }
+
+    getCompletedUserIds(campaignId) {
+        const rows = this.db.prepare(`
+            SELECT user_id FROM join_campaign_items
+            WHERE campaign_id = ?
+        `).all(String(campaignId));
+        return new Set(rows.map(r => r.user_id));
     }
 
     // --- Panel State Operations ---
@@ -239,14 +296,16 @@ class JoinCampaignRepository {
         const stmt = this.db.prepare(`
             INSERT INTO join_campaign_panels (
                 message_id, channel_id, guild_id, mode, source_guild_id, target_guild_id,
-                last_ready_count, last_status_summary, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                active_job_id, requested_amount, last_ready_count, last_status_summary, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 guild_id = excluded.guild_id,
                 mode = excluded.mode,
                 source_guild_id = excluded.source_guild_id,
                 target_guild_id = excluded.target_guild_id,
+                active_job_id = excluded.active_job_id,
+                requested_amount = excluded.requested_amount,
                 last_ready_count = excluded.last_ready_count,
                 last_status_summary = excluded.last_status_summary,
                 updated_at = excluded.updated_at
@@ -259,6 +318,8 @@ class JoinCampaignRepository {
             String(data.mode || "ALL_TO_TARGET"),
             data.sourceGuildId ? String(data.sourceGuildId) : null,
             data.targetGuildId ? String(data.targetGuildId) : null,
+            data.activeJobId ? String(data.activeJobId) : null,
+            data.requestedAmount !== undefined && data.requestedAmount !== null ? Number(data.requestedAmount) : null,
             data.lastReadyCount !== undefined && data.lastReadyCount !== null
                 ? Number(data.lastReadyCount)
                 : (data.readyCount !== undefined && data.readyCount !== null ? Number(data.readyCount) : null),
@@ -306,7 +367,10 @@ class JoinCampaignRepository {
             failedCount: row.failed_count,
             processedCount: row.processed_count,
             retryCount: row.retry_count,
-            webhookUrl: row.webhook_url,
+            currentConcurrency: row.current_concurrency ?? 8,
+            recoveryCount: row.recovery_count ?? 0,
+            candidateCursor: row.candidate_cursor ?? null,
+            lastError: row.last_error ?? null,
             startedByUserId: row.started_by_user_id,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
@@ -325,7 +389,8 @@ class JoinCampaignRepository {
             lastError: row.last_error,
             leasedUntil: row.leased_until,
             createdAt: row.created_at,
-            updatedAt: row.updated_at
+            updatedAt: row.updated_at,
+            completedAt: row.completed_at
         };
     }
 
@@ -337,6 +402,8 @@ class JoinCampaignRepository {
             mode: row.mode,
             sourceGuildId: row.source_guild_id,
             targetGuildId: row.target_guild_id,
+            activeJobId: row.active_job_id,
+            requestedAmount: row.requested_amount,
             lastReadyCount: row.last_ready_count,
             readyCount: row.last_ready_count,
             lastStatusSummary: row.last_status_summary,

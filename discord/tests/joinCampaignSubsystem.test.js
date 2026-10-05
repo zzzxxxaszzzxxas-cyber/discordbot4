@@ -9,7 +9,27 @@ const { buildPanelPayload, IDS: PANEL_IDS } = require("../features/joinCampaign/
 const { buildPreflightConfirmationPayload, IDS: CONFIRM_IDS } = require("../features/joinCampaign/ui/confirmationBuilder");
 const joinCampaignService = require("../features/joinCampaign/services/joinCampaignService");
 const { isJoinCampaignInteraction } = require("../features/joinCampaign/handlers/interactionRouter");
+const { isValidDiscordWebhookUrl } = require("../features/joinCampaign/worker/batchLogger");
+const { runPreflight } = require("../features/joinCampaign/services/preflightService");
+const campaignWorker = require("../features/joinCampaign/worker/campaignWorker");
+const { runStartupRecovery } = require("../features/joinCampaign/recovery/startupRecovery");
 const database = require("../../database/index");
+
+test.beforeEach(() => {
+    try {
+        const repo = database.repositories.joinCampaign;
+        repo.db.prepare("DELETE FROM join_campaign_jobs").run();
+        repo.db.prepare("DELETE FROM join_campaign_items").run();
+    } catch (_) {}
+});
+
+test.after(() => {
+    try {
+        const repo = database.repositories.joinCampaign;
+        repo.db.prepare("DELETE FROM join_campaign_jobs").run();
+        repo.db.prepare("DELETE FROM join_campaign_items").run();
+    } catch (_) {}
+});
 
 test("Join Campaign: Mode registry lists modes and retrieves by id", () => {
     const modes = modeRegistry.listModes();
@@ -165,4 +185,260 @@ test("Join Campaign: SQLite Repository persists panel and jobs", async () => {
 
     // Active job should now be null
     assert.equal(repo.getActiveJob(), null);
+});
+
+test("Join Campaign: isValidDiscordWebhookUrl strictly validates Discord webhook patterns", () => {
+    assert.equal(isValidDiscordWebhookUrl("https://discord.com/api/webhooks/123456789012345678/abcdef-ghijklmn"), true);
+    assert.equal(isValidDiscordWebhookUrl("https://discordapp.com/api/webhooks/123456789012345678/abcdef_ghijklmn-123"), true);
+    assert.equal(isValidDiscordWebhookUrl("https://canary.discord.com/api/webhooks/123456789012345678/abc-def"), true);
+    assert.equal(isValidDiscordWebhookUrl("https://ptb.discord.com/api/webhooks/123456789012345678/abc-def"), true);
+    
+    // SSRF & Arbitrary URL Rejections
+    assert.equal(isValidDiscordWebhookUrl("http://discord.com/api/webhooks/123/abc"), false); // Insecure HTTP
+    assert.equal(isValidDiscordWebhookUrl("https://evil.com/api/webhooks/123/abc"), false); // Non-discord host
+    assert.equal(isValidDiscordWebhookUrl("https://127.0.0.1/api/webhooks/123/abc"), false); // Localhost IP
+    assert.equal(isValidDiscordWebhookUrl("https://169.254.169.254/api/webhooks/123/abc"), false); // Cloud metadata IP
+    assert.equal(isValidDiscordWebhookUrl("https://discord.com.attacker.com/api/webhooks/123/abc"), false); // Spoofed domain
+    assert.equal(isValidDiscordWebhookUrl(""), false);
+    assert.equal(isValidDiscordWebhookUrl(null), false);
+});
+
+test("Join Campaign: Preflight sets requestedQuota accurately without clamping to readyCount", async () => {
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    memberCount: 5,
+                    members: {
+                        cache: new Map([["bot_id", { id: "bot_id" }]]),
+                        fetch: async () => new Map([["user_already_in", { id: "user_already_in" }]]),
+                        me: {
+                            permissions: {
+                                has: () => true
+                            }
+                        }
+                    }
+                }]
+            ])
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => [
+            { discord: { userId: "user_1" } },
+            { discord: { userId: "user_2" } }
+        ]
+    };
+
+    // When requestedAmount is 100 and readyCount is 2: requestedQuota must be 100 (NOT clamped to 2)
+    const preflight = await runPreflight({
+        client: mockClient,
+        mode: modeRegistry.getMode("ALL_TO_TARGET"),
+        baseConfig: { targetGuildId: "123456789012345678" },
+        requestedAmount: 100,
+        tokenManager: mockTokenManager,
+        config: { enabled: true, allowedGuilds: new Set() }
+    });
+
+    assert.equal(preflight.ok, true);
+    assert.equal(preflight.readyCount, 2);
+    assert.equal(preflight.requestedQuota, 100);
+
+    // When requestedAmount is not provided, defaults to readyCount
+    const preflightDefault = await runPreflight({
+        client: mockClient,
+        mode: modeRegistry.getMode("ALL_TO_TARGET"),
+        baseConfig: { targetGuildId: "123456789012345678" },
+        requestedAmount: null,
+        tokenManager: mockTokenManager,
+        config: { enabled: true, allowedGuilds: new Set() }
+    });
+
+    assert.equal(preflightDefault.ok, true);
+    assert.equal(preflightDefault.requestedQuota, 2);
+});
+
+test("Join Campaign: Startup recovery increments recovery_count and releases expired leases", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `rec_job_${Date.now()}`;
+    
+    // Create an interrupted job
+    repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Recovery Target",
+        status: "RUNNING",
+        requestedAmount: 50,
+        selectedAmount: 50,
+        joinedCount: 10,
+        recoveryCount: 0
+    });
+
+    // Enqueue an item and lease it
+    repo.createItems(testJobId, [{ userId: "cand_leased", tokenField: "oauth" }]);
+    const item = repo.claimNextPendingItem(testJobId, 30000);
+    assert.ok(item);
+    assert.equal(item.status, "processing");
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Recovery Target",
+                    memberCount: 1,
+                    members: { fetch: async () => new Map() }
+                }]
+            ])
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({ candidates: [], hasMore: false }),
+        getAccessToken: async () => null
+    };
+
+    const recoveryResult = await runStartupRecovery({
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager
+    });
+
+    assert.equal(recoveryResult.recovered, true);
+    assert.equal(recoveryResult.jobId, testJobId);
+
+    // Check that recovery_count was incremented in DB
+    const updatedJob = repo.findJobById(testJobId);
+    assert.equal(updatedJob.recoveryCount, 1);
+
+    // Wait for resumed worker to complete and clean up job
+    await campaignWorker.waitForCompletion();
+    repo.markJobCompleted(testJobId);
+});
+
+test("Join Campaign: Adaptive worker halts immediately on Discord Guild Full error 30005", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `guild_full_${Date.now()}`;
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Full Guild",
+        status: "RUNNING",
+        requestedAmount: 10,
+        selectedAmount: 10,
+        joinedCount: 0
+    });
+
+    // Mock candidates
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => [
+            { discord: { userId: "user_full_1" }, tokenField: "oauth" }
+        ],
+        getAccessToken: async () => ({ accessToken: "mock_token" })
+    };
+
+    // Discord API returns error 30005 (Maximum number of guild members reached)
+    const mockDiscordApi = {
+        addMemberToGuild: async () => ({
+            ok: false,
+            status: 400,
+            error: {
+                code: 30005,
+                message: "Maximum number of guild members reached (250000)"
+            }
+        })
+    };
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Full Guild"
+                }]
+            ])
+        }
+    };
+
+    await campaignWorker.startWorker({
+        job,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        discord: mockDiscordApi
+    });
+
+    await campaignWorker.waitForCompletion();
+
+    const finishedJob = repo.findJobById(testJobId);
+    assert.equal(finishedJob.status, "SERVER_FULL");
+    assert.match(finishedJob.lastError, /เซิร์ฟเวอร์ปลายทางมีสมาชิกเต็มแล้ว/);
+});
+
+test("Join Campaign: Adaptive worker skips members already in target guild without calling API", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `skip_test_${Date.now()}`;
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Skip Target",
+        status: "RUNNING",
+        requestedAmount: 1,
+        selectedAmount: 2,
+        joinedCount: 0
+    });
+
+    let apiCalls = 0;
+    const mockDiscordApi = {
+        addMemberToGuild: async () => {
+            apiCalls++;
+            return { ok: true, status: 201 };
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => [
+            { discord: { userId: "already_here_user" }, tokenField: "oauth" },
+            { discord: { userId: "new_user" }, tokenField: "oauth" }
+        ],
+        getAccessToken: async () => ({ accessToken: "mock_token" })
+    };
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Skip Target"
+                }]
+            ])
+        }
+    };
+
+    // Pre-seed targetMemberIds with already_here_user
+    const targetMemberIds = new Set(["already_here_user"]);
+
+    await campaignWorker.startWorker({
+        job,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        discord: mockDiscordApi,
+        targetMemberIds
+    });
+
+    await campaignWorker.waitForCompletion();
+
+    const finishedJob = repo.findJobById(testJobId);
+    assert.equal(finishedJob.joinedCount, 1);
+    assert.equal(finishedJob.alreadyCount, 1);
+    // Only new_user should have called addMemberToGuild
+    assert.equal(apiCalls, 1);
 });

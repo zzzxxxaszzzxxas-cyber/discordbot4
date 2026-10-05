@@ -6,11 +6,13 @@ async function* streamCandidates({
     mode,
     baseConfig = {},
     tokenManager = oauthTokenManager,
-    batchSize = 500
+    batchSize = 500,
+    startCursor = null,
+    seenUsers = null
 }) {
-    let afterId = null;
+    let afterId = startCursor || null;
     let hasMore = true;
-    const seenUsers = new Set();
+    const tracker = seenUsers instanceof Set ? seenUsers : new Set();
     const sourceGuildId = mode.requiresSource ? baseConfig.sourceGuildId : null;
 
     while (hasMore) {
@@ -21,18 +23,20 @@ async function* streamCandidates({
             allowAllGuilds: !mode.requiresSource,
             limit: batchSize,
             afterId,
-            seenUsers
+            seenUsers: tracker
         });
 
-        if (!page || !page.candidates || page.candidates.length === 0) {
+        const candidates = Array.isArray(page) ? page : (page?.candidates || []);
+        if (candidates.length === 0) {
             break;
         }
 
-        for (const candidate of page.candidates) {
-            yield candidate;
+        for (const candidate of candidates) {
+            const cursor = candidate._id || candidate.recordId ? String(candidate._id || candidate.recordId) : null;
+            yield { candidate, cursor };
         }
 
-        afterId = page.nextCursor || page.candidates[page.candidates.length - 1]?._id;
+        afterId = page.nextCursor || (candidates[candidates.length - 1]?._id ? String(candidates[candidates.length - 1]._id) : null);
         hasMore = Boolean(page.hasMore && afterId);
     }
 }
@@ -46,7 +50,8 @@ async function countEligibleCandidates({
     let readyCount = 0;
     const candidatesStream = streamCandidates({ mode, baseConfig, tokenManager });
 
-    for await (const candidate of candidatesStream) {
+    for await (const item of candidatesStream) {
+        const candidate = item.candidate || item;
         const userId = String(candidate.userId || candidate.discord?.userId || "").trim();
         if (userId && !targetMemberIds.has(userId)) {
             readyCount++;

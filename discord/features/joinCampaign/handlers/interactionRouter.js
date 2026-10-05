@@ -116,6 +116,7 @@ async function handleJoinCampaignInteraction(interaction, client) {
                     if (message) {
                         const mode = getMode(panel.mode);
                         const targetGuild = client.guilds.cache.get(panel.targetGuildId);
+                        const targetQuota = result.requestedAmount || panel.requestedAmount || panel.lastReadyCount;
                         const payload = buildPanelPayload({
                             mode,
                             panelState: panel,
@@ -123,7 +124,7 @@ async function handleJoinCampaignInteraction(interaction, client) {
                             liveJob: {
                                 status: "RUNNING",
                                 joinedCount: 0,
-                                requestedAmount: panel.lastReadyCount
+                                requestedAmount: targetQuota
                             },
                             targetGuildName: targetGuild?.name || panel.targetGuildId
                         });

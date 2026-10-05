@@ -22,7 +22,7 @@ ${navBar("/join-campaign")}
 <div class="card" style="border-left: 4px solid var(--accent, #5865f2); margin-bottom: 20px;">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
         <div>
-            <h3 style="margin:0 0 6px 0;">🎮 แผงควบคุมหลักบน Discord</h3>
+            <h3 style="margin:0 0 6px 0;">แผงควบคุมหลักบน Discord</h3>
             <p style="margin:0;color:var(--text3);font-size:0.9em;">
                 ระบบดึงสมาชิกถูกควบคุมผ่าน Discord ด้วยคำสั่ง <code>/join-panel</code> เพื่อความปลอดภัยและสิทธิ์เฉพาะเจ้าของบอท
             </p>
@@ -42,7 +42,7 @@ ${navBar("/join-campaign")}
 
 <div class="card" style="margin-bottom: 24px;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-        <h3 style="margin:0;">📊 งานที่กำลังดำเนินการ / งานล่าสุด</h3>
+        <h3 style="margin:0;">งานที่กำลังดำเนินการ / งานล่าสุด</h3>
         <p id="campaignFreshness" role="status" aria-live="polite" style="color:var(--text3);font-size:0.82em;margin:0;">กำลังโหลดสถานะ...</p>
     </div>
     
@@ -71,7 +71,7 @@ ${navBar("/join-campaign")}
 </div>
 
 <div class="card">
-    <h3 style="margin-bottom: 14px;">📜 ประวัติการดึงสมาชิกล่าสุด</h3>
+    <h3 style="margin-bottom: 14px;">ประวัติการดึงสมาชิกล่าสุด</h3>
     <div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-size:0.88em;text-align:left;">
             <thead>

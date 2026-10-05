@@ -10,7 +10,8 @@ const stagedSessions = new Map();
 
 class JoinCampaignService {
     constructor() {
-        this._activeLock = false;
+        this._activeWebhooks = new Map();
+        this._activeTargetMemberSets = new Map();
     }
 
     get isRunning() {
@@ -38,6 +39,7 @@ class JoinCampaignService {
             client,
             mode,
             baseConfig,
+            webhookUrl,
             requestedAmount
         });
 
@@ -105,7 +107,7 @@ class JoinCampaignService {
         const mode = getMode(session.modeId);
         const { preflight } = session;
 
-        // Persist initial job in SQLite
+        // Persist initial job in SQLite (Notice: webhookUrl is NOT stored in SQLite)
         const job = repository.createJob({
             id: jobId,
             mode: mode.id,
@@ -121,53 +123,164 @@ class JoinCampaignService {
             failedCount: 0,
             processedCount: 0,
             retryCount: 0,
-            webhookUrl: session.webhookUrl,
+            currentConcurrency: 8,
+            recoveryCount: 0,
+            candidateCursor: null,
+            lastError: null,
             startedByUserId: session.startedByUserId,
-            startedByChannelId: session.channelId,
             createdAt: Date.now(),
             updatedAt: Date.now()
         });
 
-        // Start worker asynchronously in background
+        // Retain webhook in memory for active campaign
+        if (session.webhookUrl) {
+            this._activeWebhooks.set(jobId, session.webhookUrl);
+        }
+        if (preflight.targetMemberIds) {
+            this._activeTargetMemberSets.set(jobId, preflight.targetMemberIds);
+        }
+
+        // Associate panel with active job and requested quota in SQLite
+        try {
+            const panel = repository.findPanelByChannelId(session.channelId);
+            if (panel) {
+                repository.savePanel({
+                    ...panel,
+                    activeJobId: jobId,
+                    requestedAmount: preflight.requestedQuota,
+                    lastReadyCount: preflight.readyCount
+                });
+            }
+        } catch (_) {}
+
+        // Start bounded adaptive worker pool in background
         campaignWorker.startWorker({
             job: {
                 ...job,
-                startedByChannelId: session.channelId
+                startedByChannelId: session.channelId,
+                webhookUrl: session.webhookUrl,
+                targetMemberIds: preflight.targetMemberIds
             },
             client,
             repository
+        }).finally(() => {
+            this._activeWebhooks.delete(jobId);
+            this._activeTargetMemberSets.delete(jobId);
         }).catch(() => {});
 
         return {
             ok: true,
             jobId,
+            requestedAmount: preflight.requestedQuota,
             message: `เริ่มดึงสมาชิกเข้าสู่ **${preflight.targetGuildName}** เรียบร้อยแล้ว ระบบจะอัปเดตความคืบหน้าให้ทราบอย่างต่อเนื่องครับ`
         };
     }
 
     getStatus(repository) {
         if (!repository) {
-            return { isRunning: false, activeJob: null, lastCompletedJob: null };
+            return {
+                isRunning: false,
+                active: null,
+                last: null,
+                activeJob: null,
+                lastCompletedJob: null
+            };
         }
 
         const activeJob = repository.findActiveRunningJob();
         const recentJobs = repository.listRecentJobs({ limit: 1 });
         const lastJob = recentJobs.length > 0 ? recentJobs[0] : null;
 
+        const formatForDashboard = (job) => {
+            if (!job) return null;
+            return {
+                id: job.id,
+                mode: job.mode,
+                targetGuildId: job.targetGuildId,
+                target_guild_id: job.targetGuildId,
+                targetGuildName: job.targetGuildName,
+                target_guild_name: job.targetGuildName,
+                sourceGuildId: job.sourceGuildId,
+                source_guild_id: job.sourceGuildId,
+                sourceGuildName: job.sourceGuildName,
+                source_guild_name: job.sourceGuildName,
+                status: (job.status || "").toLowerCase(),
+                requestedAmount: job.requestedAmount,
+                requested_amount: job.requestedAmount,
+                maxUsers: job.requestedAmount,
+                joinedCount: job.joinedCount,
+                joined_count: job.joinedCount,
+                joined: job.joinedCount,
+                alreadyCount: job.alreadyCount,
+                already_count: job.alreadyCount,
+                already_member_count: job.alreadyCount,
+                alreadyMember: job.alreadyCount,
+                failedCount: job.failedCount,
+                failed_count: job.failedCount,
+                failed: job.failedCount,
+                processedCount: job.processedCount,
+                processed_count: job.processedCount,
+                retryCount: job.retryCount,
+                retry_count: job.retryCount,
+                currentConcurrency: job.currentConcurrency,
+                createdAt: job.createdAt,
+                created_at: job.createdAt,
+                started_at: job.createdAt,
+                completedAt: job.completedAt,
+                completed_at: job.completedAt
+            };
+        };
+
+        const activeFormatted = formatForDashboard(activeJob);
+        const lastFormatted = formatForDashboard(lastJob && lastJob.status !== "RUNNING" ? lastJob : null);
+
         return {
             isRunning: this.isRunning || Boolean(activeJob),
-            activeJob: activeJob || null,
+            active: activeFormatted,
+            last: lastFormatted,
+            activeJob,
             lastCompletedJob: lastJob && lastJob.status !== "RUNNING" ? lastJob : null
         };
     }
 
     getHistory(repository, { limit = 20, offset = 0 } = {}) {
         if (!repository) return [];
-        return repository.listRecentJobs({ limit, offset });
+        const raw = repository.listRecentJobs({ limit, offset });
+        return raw.map(job => ({
+            id: job.id,
+            mode: job.mode,
+            targetGuildId: job.targetGuildId,
+            target_guild_id: job.targetGuildId,
+            targetGuildName: job.targetGuildName,
+            target_guild_name: job.targetGuildName,
+            sourceGuildId: job.sourceGuildId,
+            source_guild_id: job.sourceGuildId,
+            sourceGuildName: job.sourceGuildName,
+            source_guild_name: job.sourceGuildName,
+            status: (job.status || "").toLowerCase(),
+            requestedAmount: job.requestedAmount,
+            requested_amount: job.requestedAmount,
+            joinedCount: job.joinedCount,
+            joined_count: job.joinedCount,
+            alreadyCount: job.alreadyCount,
+            already_count: job.alreadyCount,
+            already_member_count: job.alreadyCount,
+            failedCount: job.failedCount,
+            failed_count: job.failedCount,
+            processedCount: job.processedCount,
+            processed_count: job.processedCount,
+            retryCount: job.retryCount,
+            retry_count: job.retryCount,
+            createdAt: job.createdAt,
+            created_at: job.createdAt,
+            started_at: job.createdAt,
+            completedAt: job.completedAt,
+            completed_at: job.completedAt
+        }));
     }
 
     getMetrics(repository) {
-        if (!repository) return { totalCampaigns: 0, totalJoined: 0, totalProcessed: 0, totalFailed: 0 };
+        if (!repository) return { totalJobs: 0, totalCampaigns: 0, totalJoined: 0, totalProcessed: 0, totalFailed: 0, successRatePercent: 0 };
         return repository.getMetrics();
     }
 }

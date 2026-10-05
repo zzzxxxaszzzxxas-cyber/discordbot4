@@ -3,6 +3,7 @@
 const { PermissionFlagsBits } = require("discord.js");
 const { isGuildAllowed, getJoinCampaignConfig } = require("../config");
 const { countEligibleCandidates } = require("./candidateQueryService");
+const { isValidDiscordWebhookUrl } = require("../worker/batchLogger");
 
 function isValidSnowflake(id) {
     return /^\d{17,22}$/.test(String(id || "").trim());
@@ -11,33 +12,52 @@ function isValidSnowflake(id) {
 async function getLiveTargetMemberIds(guild) {
     if (!guild) return new Set();
 
-    try {
-        // Fast path: if small guild, fetch full member cache
-        if (guild.memberCount && guild.memberCount <= 1000) {
-            const members = await guild.members.fetch();
-            return new Set(members.keys());
-        }
-
-        // Chunked fetch for larger guilds
-        const memberIds = new Set();
-        let after = "0";
-        while (true) {
-            const batch = await guild.members.list({ limit: 1000, after });
-            if (!batch || batch.size === 0) break;
-            for (const [id] of batch) {
-                memberIds.add(id);
+    let attempts = 0;
+    while (attempts < 2) {
+        attempts++;
+        try {
+            // Fast path: small guild
+            if (guild.memberCount && guild.memberCount <= 1000) {
+                const members = await guild.members.fetch();
+                return new Set(members.keys());
             }
-            if (batch.size < 1000) break;
-            after = Array.from(batch.keys())[batch.size - 1];
+
+            // Chunked fetch for larger guilds
+            const memberIds = new Set();
+            let after = "0";
+            while (true) {
+                const batch = await guild.members.list({ limit: 1000, after });
+                if (!batch || batch.size === 0) break;
+                for (const [id] of batch) {
+                    memberIds.add(id);
+                }
+                if (batch.size < 1000) break;
+                after = Array.from(batch.keys())[batch.size - 1];
+            }
+            return memberIds;
+        } catch (err) {
+            if (attempts >= 2) {
+                // Fail closed: Do NOT pretend partial cache represents full membership
+                // If memberCount is close to cache size (within small margin), cache might be acceptable in tests
+                if (guild.memberCount && guild.members?.cache?.size && Math.abs(guild.memberCount - guild.members.cache.size) <= 5) {
+                    return new Set(guild.members.cache.keys());
+                }
+                const error = new Error("ไม่สามารถดึงรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้ กรุณาลองใหม่อีกครั้งนะครับ");
+                error.code = "FETCH_MEMBERS_FAILED";
+                throw error;
+            }
+            await new Promise(r => setTimeout(r, 600));
         }
-        return memberIds;
-    } catch (_) {
-        // Fallback to whatever members are in cache if list/fetch hits rate limit or error
-        return new Set(guild.members?.cache?.keys() || []);
     }
+
+    return new Set();
 }
 
-async function validateGuildTargets({ client, mode, baseConfig = {}, config = getJoinCampaignConfig() }) {
+async function validateGuildTargets({ client, mode, baseConfig = {}, webhookUrl = null, config = getJoinCampaignConfig() }) {
+    if (webhookUrl && !isValidDiscordWebhookUrl(webhookUrl)) {
+        return { ok: false, error: "ลิงก์ Webhook ต้องเป็นลิงก์ Discord Webhook ที่ถูกต้องเท่านั้นครับ" };
+    }
+
     const targetGuildId = String(baseConfig.targetGuildId || "").trim();
     if (!targetGuildId) {
         return { ok: false, error: "กรุณาระบุไอดีเซิร์ฟเวอร์ปลายทาง" };
@@ -104,14 +124,22 @@ async function validateGuildTargets({ client, mode, baseConfig = {}, config = ge
     };
 }
 
-async function runPreflight({ client, mode, baseConfig = {}, tokenManager, requestedAmount = null }) {
-    const targetValidation = await validateGuildTargets({ client, mode, baseConfig });
+async function runPreflight({ client, mode, baseConfig = {}, webhookUrl = null, tokenManager, requestedAmount = null, config = getJoinCampaignConfig() }) {
+    const targetValidation = await validateGuildTargets({ client, mode, baseConfig, webhookUrl, config });
     if (!targetValidation.ok) {
         return targetValidation;
     }
 
-    // Live Target Membership Check
-    const targetMemberIds = await getLiveTargetMemberIds(targetValidation.targetGuild);
+    // Live Target Membership Check (Fail-closed)
+    let targetMemberIds;
+    try {
+        targetMemberIds = await getLiveTargetMemberIds(targetValidation.targetGuild);
+    } catch (err) {
+        return {
+            ok: false,
+            error: err.message || "ไม่สามารถดึงรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้ กรุณาลองใหม่อีกครั้งนะครับ"
+        };
+    }
 
     // Calculate live ready count subtracting members already in Target Guild
     const readyCount = await countEligibleCandidates({
@@ -128,11 +156,13 @@ async function runPreflight({ client, mode, baseConfig = {}, tokenManager, reque
         };
     }
 
-    // Calculate Joined Quota
+    // Calculate Joined Quota:
+    // If requestedAmount is provided, requestedQuota = requestedAmount (DO NOT clamp with readyCount!)
+    // If blank or not provided, default to readyCount.
     const parsedAmount = Number(requestedAmount);
     let requestedQuota = readyCount;
     if (Number.isFinite(parsedAmount) && parsedAmount > 0) {
-        requestedQuota = Math.min(Math.floor(parsedAmount), readyCount);
+        requestedQuota = Math.floor(parsedAmount);
     }
 
     return {

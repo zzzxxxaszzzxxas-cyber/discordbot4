@@ -1,4 +1,4 @@
-const joinCampaign = require("../features/joinCampaign");
+const joinCampaign = require("../features/joinCampaign/index");
 const { getDiscordGuildIconUrl } = require("../core/webhooks");
 
 function listJoinCampaignTargets(client, campaignConfig = joinCampaign.getJoinCampaignConfig()) {
@@ -20,9 +20,6 @@ function resolveJoinCampaignTarget(client, guildId, campaignConfig = joinCampaig
 
     if (!campaignConfig.enabled) {
         return { ok: false, status: 503, code: "CAMPAIGN_DISABLED", error: "ระบบ Join Campaign ถูกปิด" };
-    }
-    if (!(campaignConfig.allowedGuilds instanceof Set) || campaignConfig.allowedGuilds.size === 0) {
-        return { ok: false, status: 503, code: "CAMPAIGN_ALLOWLIST_REQUIRED", error: "ยังไม่ได้ตั้งค่ารายการเซิร์ฟเวอร์ที่อนุญาต" };
     }
     if (!/^\d{17,22}$/.test(safeGuildId)) {
         return { ok: false, status: 400, code: "INVALID_GUILD_ID", error: "Guild ID ไม่ถูกต้อง" };

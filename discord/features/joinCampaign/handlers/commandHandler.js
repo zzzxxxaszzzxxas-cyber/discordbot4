@@ -35,14 +35,13 @@ async function handleJoinPanelCommand(interaction, client) {
     const targetGuildOption = interaction.options.getString("target_guild")?.trim();
     const sourceGuildOption = interaction.options.getString("source_guild")?.trim();
 
-    // 1. Duplicate Panel Clean Up: delete old panel in this channel if exists
-    try {
-        const oldPanel = repository.findPanelByChannelId(interaction.channelId);
-        if (oldPanel && oldPanel.messageId) {
-            await interaction.channel.messages.delete(oldPanel.messageId).catch(() => {});
-            repository.deletePanelByChannelId(interaction.channelId);
-        }
-    } catch (_) {}
+    // 1. Validate options consistency
+    if (sourceGuildOption && !targetGuildOption) {
+        return interaction.reply({
+            content: `> ${emoji.alert} เมื่อระบุเซิร์ฟเวอร์ต้นทาง จำเป็นต้องระบุ **เซิร์ฟเวอร์ปลายทาง** (\`target_guild\`) ด้วยเสมอครับ`,
+            ephemeral: true
+        });
+    }
 
     // 2. Resolve Mode
     const modeId = sourceGuildOption ? "GUILD_TO_GUILD" : "ALL_TO_TARGET";
@@ -57,7 +56,7 @@ async function handleJoinPanelCommand(interaction, client) {
     let targetGuildName = null;
     let sourceGuildName = null;
 
-    // 3. Pre-calculate if target guild provided
+    // 3. Strict Pre-validation if target guild is provided
     if (baseConfig.targetGuildId) {
         const targetValidation = await validateGuildTargets({
             client,
@@ -65,20 +64,41 @@ async function handleJoinPanelCommand(interaction, client) {
             baseConfig
         });
 
-        if (targetValidation.ok) {
-            targetGuildName = targetValidation.targetGuildName;
-            sourceGuildName = targetValidation.sourceGuildName;
+        if (!targetValidation.ok) {
+            return interaction.reply({
+                content: `> ${emoji.no_entry} ${targetValidation.error}`,
+                ephemeral: true
+            });
+        }
 
+        targetGuildName = targetValidation.targetGuildName;
+        sourceGuildName = targetValidation.sourceGuildName;
+
+        try {
             const liveMemberIds = await getLiveTargetMemberIds(targetValidation.targetGuild);
             readyCount = await countEligibleCandidates({
                 mode,
                 baseConfig,
                 targetMemberIds: liveMemberIds
-            }).catch(() => null);
+            });
+        } catch (err) {
+            return interaction.reply({
+                content: `> ${emoji.alert} ${err.message || "เกิดข้อผิดพลาดในการตรวจสอบรายชื่อสมาชิกปัจจุบัน"}`,
+                ephemeral: true
+            });
         }
     }
 
-    // 4. Build Panel Payload
+    // 4. Duplicate Panel Clean Up: delete old panel in this channel only after validation passes
+    try {
+        const oldPanel = repository.findPanelByChannelId(interaction.channelId);
+        if (oldPanel && oldPanel.messageId) {
+            await interaction.channel.messages.delete(oldPanel.messageId).catch(() => {});
+            repository.deletePanelByChannelId(interaction.channelId);
+        }
+    } catch (_) {}
+
+    // 5. Build Panel Payload
     const payload = buildPanelPayload({
         mode,
         panelState: baseConfig,
@@ -88,13 +108,13 @@ async function handleJoinPanelCommand(interaction, client) {
         targetGuildName
     });
 
-    // 5. Send Panel to Channel
+    // 6. Send Panel to Channel
     const replyMessage = await interaction.reply({
         ...payload,
         fetchReply: true
     });
 
-    // 6. Persist Panel State to SQLite
+    // 7. Persist Panel State to SQLite
     repository.savePanel({
         messageId: replyMessage.id,
         channelId: interaction.channelId,

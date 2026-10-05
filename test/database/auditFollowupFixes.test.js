@@ -313,18 +313,19 @@ describe("Audit Follow-up Architecture & Invariants Suite", () => {
             const versionDb = new Database(":memory:");
             const results = runMigrations(versionDb);
 
-            assert.equal(results.currentVersion, 5);
+            assert.equal(results.currentVersion, 6);
             const userVersion = versionDb.pragma("user_version", { simple: true });
-            assert.equal(userVersion, 5, "PRAGMA user_version must be exactly 5");
+            assert.equal(userVersion, 6, "PRAGMA user_version must be exactly 6");
 
-            // Verify all 5 migrations recorded in schema_migrations
+            // Verify all 6 migrations recorded in schema_migrations
             const rows = versionDb.prepare("SELECT migration_id, version FROM schema_migrations ORDER BY version ASC").all();
-            assert.equal(rows.length, 5);
+            assert.equal(rows.length, 6);
             assert.equal(rows[0].migration_id, "001_initial_core.sql");
             assert.equal(rows[1].migration_id, "002_history_events.sql");
             assert.equal(rows[2].migration_id, "003_cache_subsystem.sql");
             assert.equal(rows[3].migration_id, "004_session_runtime_and_assets.sql");
             assert.equal(rows[4].migration_id, "005_join_campaign.sql");
+            assert.equal(rows[5].migration_id, "006_join_campaign_hardening.sql");
 
             versionDb.close();
         });
