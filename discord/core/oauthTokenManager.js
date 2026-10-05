@@ -86,6 +86,13 @@ function getOAuthRefreshConfig(env = process.env) {
     };
 }
 
+function resolveFailMax(failMax, env = process.env) {
+    if (failMax !== undefined && failMax !== null) {
+        return Math.max(1, Math.min(50, readPositiveNumber(failMax, DEFAULT_REFRESH_FAIL_MAX, 1)));
+    }
+    return getOAuthRefreshConfig(env).failMax;
+}
+
 function tokenPath(tokenField, key) {
     return `${tokenField}.${key}`;
 }
@@ -168,7 +175,9 @@ async function exchangeAuthorizationCode(code, redirectUri, discord = discordApi
         error.code = "oauth_code_required";
         throw error;
     }
-    return await discord.exchangeCode(code, redirectUri);
+    const tokenData = await discord.exchangeCode(code, redirectUri);
+    validateTokenData(tokenData);
+    return tokenData;
 }
 
 async function commitVerificationActivation({
@@ -296,7 +305,8 @@ async function readFreshOAuthDocument(model, docOrId, tokenField) {
     return await query;
 }
 
-async function markRefreshFailure(doc, err, { model = OAuthUser, now = Date.now(), failMax = DEFAULT_REFRESH_FAIL_MAX, tokenField = "oauth" } = {}) {
+async function markRefreshFailure(doc, err, { model = OAuthUser, now = Date.now(), failMax = null, env = process.env, tokenField = "oauth" } = {}) {
+    const effectiveFailMax = resolveFailMax(failMax, env);
     const tokenState = doc?.[tokenField] || {};
     const userId = doc?.discord?.userId || String(doc?._id || doc?.id || "unknown");
     const previousRefreshToken = tokenState.encryptedRefreshToken;
@@ -310,7 +320,7 @@ async function markRefreshFailure(doc, err, { model = OAuthUser, now = Date.now(
         updatedAt: now
     };
 
-    const shouldRevoke = nextFailCount >= failMax || isFatalGrant;
+    const shouldRevoke = nextFailCount >= effectiveFailMax || isFatalGrant;
     if (shouldRevoke) {
         set[tokenPath(tokenField, "revokedAt")] = now;
         diagnosticStats.revokedCount++;
@@ -360,12 +370,14 @@ async function performTokenRefreshUnderLock({
     discord = discordApi,
     tokenField = "oauth",
     now = Date.now(),
-    failMax = DEFAULT_REFRESH_FAIL_MAX,
+    failMax = null,
+    env = process.env,
     redirectUri,
     force = false,
     marginMs = DEFAULT_ON_DEMAND_MARGIN_MS
 }) {
     assertValidTokenField(tokenField);
+    const effectiveFailMax = resolveFailMax(failMax, env);
     const lockUserId = doc.discord?.userId || String(doc._id);
     const fresh = await readFreshOAuthDocument(model, doc, tokenField);
     if (!fresh) return conflictOutcome(tokenField, lockUserId, "document_missing");
@@ -380,7 +392,7 @@ async function performTokenRefreshUnderLock({
         return { ok: false, code: "token_revoked", reason: "Token is revoked", userId, tokenField };
     }
 
-    if (Number(tokenState.refreshFailCount || 0) >= failMax) {
+    if (Number(tokenState.refreshFailCount || 0) >= effectiveFailMax) {
         return { ok: false, code: "oauth_refresh_exhausted", reason: "Token refresh attempts exhausted", userId, tokenField };
     }
 
@@ -418,20 +430,20 @@ async function performTokenRefreshUnderLock({
     if (!rawRefreshToken) {
         const decryptError = new Error("Failed to decrypt stored refresh token");
         decryptError.code = "oauth_refresh_token_decrypt_failed";
-        return markRefreshFailure(fresh, decryptError, { model, now, failMax, tokenField });
+        return markRefreshFailure(fresh, decryptError, { model, now, failMax: effectiveFailMax, env, tokenField });
     }
 
     let tokenData;
     try {
         tokenData = await discord.refreshToken(rawRefreshToken, redirectUri || resolveRedirectUriForField(tokenField));
     } catch (error) {
-        return markRefreshFailure(fresh, error, { model, now, failMax, tokenField });
+        return markRefreshFailure(fresh, error, { model, now, failMax: effectiveFailMax, env, tokenField });
     }
 
     try {
         validateTokenData(tokenData);
     } catch (valErr) {
-        return markRefreshFailure(fresh, valErr, { model, now, failMax, tokenField });
+        return markRefreshFailure(fresh, valErr, { model, now, failMax: effectiveFailMax, env, tokenField });
     }
 
     const nextPayload = prepareStoredToken(tokenData, { now, previousVersion, isRefresh: true });
@@ -541,6 +553,7 @@ async function getAccessToken({
             now,
             marginMs,
             failMax: getOAuthRefreshConfig(env).failMax,
+            env,
             redirectUri,
             force: forceRefresh
         });
@@ -1013,7 +1026,8 @@ async function getOwnerTokenMetadata(userId, { model = OAuthUser, tokenFields = 
     return result;
 }
 
-function checkTokenCryptoReasons(token, now, failMax = DEFAULT_REFRESH_FAIL_MAX) {
+function checkTokenCryptoReasons(token, now, failMax = null, env = process.env) {
+    const effectiveFailMax = resolveFailMax(failMax, env);
     const reasons = [];
     const accessToken = token.encryptedAccessToken ? decryptToken(token.encryptedAccessToken) : null;
     const refreshToken = token.encryptedRefreshToken ? decryptToken(token.encryptedRefreshToken) : null;
@@ -1026,7 +1040,7 @@ function checkTokenCryptoReasons(token, now, failMax = DEFAULT_REFRESH_FAIL_MAX)
 
     if (token.revokedAt) reasons.push("token_revoked");
 
-    if (Number(token.refreshFailCount || 0) >= failMax) {
+    if (Number(token.refreshFailCount || 0) >= effectiveFailMax) {
         reasons.push("refresh_exhausted");
     }
 
@@ -1067,14 +1081,16 @@ async function getRecoveryStatuses(userIds, {
     requiredScopes = REQUIRED_USER_SCOPES,
     tokenField = "oauth",
     now = Date.now(),
-    failMax = DEFAULT_REFRESH_FAIL_MAX,
-    includeDeleted = false
+    failMax = null,
+    includeDeleted = false,
+    env = process.env
 } = {}) {
     assertValidTokenField(tokenField);
     if (!Array.isArray(userIds) || userIds.length === 0) {
         return new Map();
     }
 
+    const effectiveFailMax = resolveFailMax(failMax, env);
     const safeIds = userIds.map(id => String(id || "")).filter(Boolean);
     const filter = { "discord.userId": { $in: safeIds } };
     if (!includeDeleted) {
@@ -1103,7 +1119,7 @@ async function getRecoveryStatuses(userIds, {
 
         const tokenState = doc[tokenField] || {};
         const reasons = [
-            ...checkTokenCryptoReasons(tokenState, now, failMax),
+            ...checkTokenCryptoReasons(tokenState, now, effectiveFailMax, env),
             ...collectMissingScopeReasons(tokenState.scope, requiredScopes)
         ];
         const uniqueReasons = [...new Set(reasons)];
@@ -1117,10 +1133,23 @@ async function getRecoveryStatuses(userIds, {
     return resultMap;
 }
 
-function tokenRecoveryReasons(token = {}, now = Date.now(), requiredScopes = REQUIRED_USER_SCOPES, failMax = DEFAULT_REFRESH_FAIL_MAX) {
+function tokenRecoveryReasons(token = {}, now = Date.now(), requiredScopes = REQUIRED_USER_SCOPES, failMax = null, env = process.env) {
+    let resolvedNow = now;
+    let resolvedScopes = requiredScopes;
+    let resolvedFailMax = failMax;
+    let resolvedEnv = env;
+
+    if (now && typeof now === "object" && !(now instanceof Date)) {
+        resolvedNow = now.now !== undefined ? now.now : Date.now();
+        resolvedScopes = now.requiredScopes !== undefined ? now.requiredScopes : REQUIRED_USER_SCOPES;
+        resolvedFailMax = now.failMax !== undefined ? now.failMax : null;
+        resolvedEnv = now.env !== undefined ? now.env : process.env;
+    }
+
+    const effectiveFailMax = resolveFailMax(resolvedFailMax, resolvedEnv);
     const reasons = [
-        ...checkTokenCryptoReasons(token, now, failMax),
-        ...collectMissingScopeReasons(token?.scope, requiredScopes)
+        ...checkTokenCryptoReasons(token, resolvedNow, effectiveFailMax, resolvedEnv),
+        ...collectMissingScopeReasons(token?.scope, resolvedScopes)
     ];
     return [...new Set(reasons)];
 }
@@ -1476,6 +1505,7 @@ module.exports = {
     getDiagnostics,
 
     _test: {
+        resolveFailMax,
         assertValidTokenField,
         validateTokenData,
         tokenPath,

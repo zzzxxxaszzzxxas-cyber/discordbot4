@@ -1615,4 +1615,165 @@ test("oauthTokenManager: getOwnerTokenMetadata normalizes string tokenFields wit
   expect(metadata.oauth.scope).toBe("identify");
 });
 
+test("oauthTokenManager: exchangeAuthorizationCode validates inputs and rejects missing code", async () => {
+  await expect(manager.exchangeAuthorizationCode(null, "https://example.com/callback")).rejects.toMatchObject({
+    code: "oauth_code_required"
+  });
+  await expect(manager.exchangeAuthorizationCode("", "https://example.com/callback")).rejects.toMatchObject({
+    code: "oauth_code_required"
+  });
+  await expect(manager.exchangeAuthorizationCode(12345, "https://example.com/callback")).rejects.toMatchObject({
+    code: "oauth_code_required"
+  });
+});
+
+test("oauthTokenManager: exchangeAuthorizationCode immediately rejects malformed token responses from Discord API", async () => {
+  const dummyDiscordEmpty = {
+    exchangeCode: jest.fn().mockResolvedValue({})
+  };
+  await expect(manager.exchangeAuthorizationCode("valid-code", "https://example.com/callback", dummyDiscordEmpty))
+    .rejects.toMatchObject({ code: "oauth_token_missing_access_token" });
+
+  const dummyDiscordNoRefresh = {
+    exchangeCode: jest.fn().mockResolvedValue({ access_token: "mock-access" })
+  };
+  await expect(manager.exchangeAuthorizationCode("valid-code", "https://example.com/callback", dummyDiscordNoRefresh))
+    .rejects.toMatchObject({ code: "oauth_token_missing_refresh_token" });
+
+  const dummyDiscordBadExpires = {
+    exchangeCode: jest.fn().mockResolvedValue({ access_token: "mock-access", refresh_token: "mock-refresh", expires_in: -10 })
+  };
+  await expect(manager.exchangeAuthorizationCode("valid-code", "https://example.com/callback", dummyDiscordBadExpires))
+    .rejects.toMatchObject({ code: "oauth_token_invalid_expires_in" });
+
+  const dummyDiscordNonObject = {
+    exchangeCode: jest.fn().mockResolvedValue("not-an-object")
+  };
+  await expect(manager.exchangeAuthorizationCode("valid-code", "https://example.com/callback", dummyDiscordNonObject))
+    .rejects.toMatchObject({ code: "oauth_token_invalid_payload" });
+});
+
+test("oauthTokenManager: exchangeAuthorizationCode returns validated token data on success", async () => {
+  const validPayload = {
+    access_token: "good-access-token",
+    refresh_token: "good-refresh-token",
+    expires_in: 3600,
+    scope: "identify email",
+    token_type: "Bearer"
+  };
+  const mockDiscord = {
+    exchangeCode: jest.fn().mockResolvedValue(validPayload)
+  };
+
+  const result = await manager.exchangeAuthorizationCode("good-code", "https://example.com/callback", mockDiscord);
+  expect(result).toEqual(validPayload);
+  expect(mockDiscord.exchangeCode).toHaveBeenCalledWith("good-code", "https://example.com/callback");
+});
+
+test("oauthTokenManager: getRecoveryStatuses and tokenRecoveryReasons honor OAUTH_TOKEN_REFRESH_FAIL_MAX from env", async () => {
+  const encAccess = encryptToken("access-ok");
+  const encRefresh = encryptToken("refresh-ok");
+  const completeScopes = "identify email connections guilds guilds.members.read guilds.join";
+
+  const userDocAtThreshold = {
+    discord: { userId: "user-exhausted-at-3" },
+    oauth: {
+      encryptedAccessToken: encAccess,
+      encryptedRefreshToken: encRefresh,
+      scope: completeScopes,
+      expiresAt: Date.now() + 60000,
+      refreshFailCount: 3,
+      revokedAt: null
+    }
+  };
+
+  const userDocBelowThreshold = {
+    discord: { userId: "user-below-threshold-2" },
+    oauth: {
+      encryptedAccessToken: encAccess,
+      encryptedRefreshToken: encRefresh,
+      scope: completeScopes,
+      expiresAt: Date.now() + 60000,
+      refreshFailCount: 2,
+      revokedAt: null
+    }
+  };
+
+  const model = {
+    find: jest.fn(() => ({
+      select: () => ({
+        lean: () => Promise.resolve([userDocAtThreshold, userDocBelowThreshold])
+      })
+    }))
+  };
+
+  const customEnv = { OAUTH_TOKEN_REFRESH_FAIL_MAX: "3" };
+  const statuses = await manager.getRecoveryStatuses(
+    ["user-exhausted-at-3", "user-below-threshold-2"],
+    { model, env: customEnv }
+  );
+
+  const exhaustedUser = statuses.get("user-exhausted-at-3");
+  expect(exhaustedUser.status).toBe("recovery_required");
+  expect(exhaustedUser.reasons).toContain("refresh_exhausted");
+  expect(exhaustedUser.reasonLabels).toContain("Refresh ล้มเหลวถึงจำนวนสูงสุด");
+
+  const healthyUser = statuses.get("user-below-threshold-2");
+  expect(healthyUser.status).toBe("healthy");
+  expect(healthyUser.reasons).not.toContain("refresh_exhausted");
+
+  const reasonsAt3 = manager.tokenRecoveryReasons(userDocAtThreshold.oauth, Date.now(), undefined, undefined, customEnv);
+  expect(reasonsAt3).toContain("refresh_exhausted");
+
+  const reasonsAt2 = manager.tokenRecoveryReasons(userDocBelowThreshold.oauth, Date.now(), undefined, undefined, customEnv);
+  expect(reasonsAt2).not.toContain("refresh_exhausted");
+
+  const reasonsWithOptions = manager.tokenRecoveryReasons(userDocAtThreshold.oauth, { env: customEnv });
+  expect(reasonsWithOptions).toContain("refresh_exhausted");
+});
+
+test("oauthTokenManager: getRecoveryStatuses respects process.env.OAUTH_TOKEN_REFRESH_FAIL_MAX when env option is omitted", async () => {
+  const encAccess = encryptToken("access-ok");
+  const encRefresh = encryptToken("refresh-ok");
+  const completeScopes = "identify email connections guilds guilds.members.read guilds.join";
+
+  const originalEnvValue = process.env.OAUTH_TOKEN_REFRESH_FAIL_MAX;
+  try {
+    process.env.OAUTH_TOKEN_REFRESH_FAIL_MAX = "3";
+
+    const userDoc = {
+      discord: { userId: "user-env-test" },
+      oauth: {
+        encryptedAccessToken: encAccess,
+        encryptedRefreshToken: encRefresh,
+        scope: completeScopes,
+        expiresAt: Date.now() + 60000,
+        refreshFailCount: 3,
+        revokedAt: null
+      }
+    };
+
+    const model = {
+      find: jest.fn(() => ({
+        select: () => ({
+          lean: () => Promise.resolve([userDoc])
+        })
+      }))
+    };
+
+    const statuses = await manager.getRecoveryStatuses(["user-env-test"], { model });
+    const recovery = statuses.get("user-env-test");
+    expect(recovery.reasons).toContain("refresh_exhausted");
+
+    const reasons = manager.tokenRecoveryReasons(userDoc.oauth);
+    expect(reasons).toContain("refresh_exhausted");
+  } finally {
+    if (originalEnvValue === undefined) {
+      delete process.env.OAUTH_TOKEN_REFRESH_FAIL_MAX;
+    } else {
+      process.env.OAUTH_TOKEN_REFRESH_FAIL_MAX = originalEnvValue;
+    }
+  }
+});
+
 

@@ -298,8 +298,8 @@ async function getMemberDetail(guildId, userId, { canViewSensitive = false } = {
     };
 }
 
-function tokenRecoveryReasons(token = {}, now = Date.now()) {
-    return oauthTokenManager.tokenRecoveryReasons(token, now);
+function tokenRecoveryReasons(token = {}, now = Date.now(), ...args) {
+    return oauthTokenManager.tokenRecoveryReasons(token, now, ...args);
 }
 
 function recoveryReasonLabel(reason) {
