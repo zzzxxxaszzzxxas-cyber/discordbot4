@@ -2,7 +2,7 @@
 
 **สถานะ:** 🟡 Production readiness pending final test verification  
 **วันที่ยืนยัน:** 2026-09-24  
-**สาขาหลัก (Branch):** `ทท`  
+**สาขาหลัก (Branch):** `main`  
 
 ---
 

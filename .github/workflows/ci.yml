@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - ttt
-      - "ทท"
   pull_request:
 
 permissions:

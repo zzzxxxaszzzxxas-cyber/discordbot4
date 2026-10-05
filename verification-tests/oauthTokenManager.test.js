@@ -1776,4 +1776,35 @@ test("oauthTokenManager: getRecoveryStatuses respects process.env.OAUTH_TOKEN_RE
   }
 });
 
+test("oauthTokenManager: isInvalidGrantError detects structured providerCode, status, and error message", () => {
+  const isGrant = manager._test.isInvalidGrantError;
+  expect(isGrant({ providerCode: "invalid_grant" })).toBe(true);
+  expect(isGrant({ code: "invalid_grant" })).toBe(true);
+  expect(isGrant({ status: 400, message: "Request failed with invalid_grant" })).toBe(true);
+  expect(isGrant(new Error("invalid_grant"))).toBe(true);
+  expect(isGrant({ status: 500, message: "Internal server error" })).toBe(false);
+  expect(isGrant(null)).toBe(false);
+});
+
+test("oauthTokenManager: stop called while start is in-flight prevents backgroundTimer leak", async () => {
+  const mockModel = {
+    find: jest.fn(() => ({
+      sort: () => ({
+        limit: () => new Promise(resolve => setTimeout(() => resolve([]), 50))
+      })
+    }))
+  };
+
+  const startPromise = manager.start({ OAuthUserModel: mockModel, forceSweep: true });
+  const stopResult = await manager.stop();
+
+  expect(stopResult.running).toBe(false);
+  expect(stopResult.timerActive).toBe(false);
+
+  const startResult = await startPromise;
+  expect(startResult.running).toBe(false);
+  expect(startResult.timerActive).toBe(false);
+  expect(manager.getDiagnostics().timerActive).toBe(false);
+});
+
 

@@ -305,6 +305,18 @@ async function readFreshOAuthDocument(model, docOrId, tokenField) {
     return await query;
 }
 
+function isInvalidGrantError(err) {
+    if (typeof discordApi?.isOAuthInvalidGrantError === "function") {
+        if (discordApi.isOAuthInvalidGrantError(err)) return true;
+    }
+    return (
+        err?.providerCode === "invalid_grant" ||
+        err?.code === "invalid_grant" ||
+        (Number(err?.status) === 400 && String(err?.message || "").includes("invalid_grant")) ||
+        String(err?.message || "").includes("invalid_grant")
+    );
+}
+
 async function markRefreshFailure(doc, err, { model = OAuthUser, now = Date.now(), failMax = null, env = process.env, tokenField = "oauth" } = {}) {
     const effectiveFailMax = resolveFailMax(failMax, env);
     const tokenState = doc?.[tokenField] || {};
@@ -312,7 +324,7 @@ async function markRefreshFailure(doc, err, { model = OAuthUser, now = Date.now(
     const previousRefreshToken = tokenState.encryptedRefreshToken;
     const previousVersion = Number(tokenState.version || 0);
     const nextFailCount = Number(tokenState.refreshFailCount || 0) + 1;
-    const isFatalGrant = String(err?.message || "").includes("invalid_grant") || err?.code === "invalid_grant";
+    const isFatalGrant = isInvalidGrantError(err);
 
     const set = {
         [tokenPath(tokenField, "refreshFailCount")]: nextFailCount,
@@ -1420,6 +1432,10 @@ async function start(options = {}) {
             diagnosticStats.lastError = safeError(err);
         }
 
+        if (!isStarted) {
+            return getDiagnostics();
+        }
+
         if (!backgroundTimer) {
             backgroundTimer = setInterval(() => {
                 runScheduledSweep().catch(err => {
@@ -1436,6 +1452,8 @@ async function start(options = {}) {
 }
 
 async function stop() {
+    isStarted = false;
+    startPromise = null;
     if (backgroundTimer) {
         clearInterval(backgroundTimer);
         backgroundTimer = null;
@@ -1445,8 +1463,6 @@ async function stop() {
             await inFlightRefreshPromise;
         } catch {}
     }
-    isStarted = false;
-    startPromise = null;
     diagnosticStats.stoppedAt = Date.now();
     return getDiagnostics();
 }
@@ -1506,6 +1522,7 @@ module.exports = {
 
     _test: {
         resolveFailMax,
+        isInvalidGrantError,
         assertValidTokenField,
         validateTokenData,
         tokenPath,
