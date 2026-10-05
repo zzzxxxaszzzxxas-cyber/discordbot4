@@ -1807,4 +1807,153 @@ test("oauthTokenManager: stop called while start is in-flight prevents backgroun
   expect(manager.getDiagnostics().timerActive).toBe(false);
 });
 
+test("oauthTokenManager: dispatches oauth.token_exhausted alert when refreshFailCount reaches failMax", async () => {
+  const webhooks = require("../discord/core/webhooks");
+  const origSendWebhookEvent = webhooks.sendWebhookEvent;
+  const dispatched = [];
+  webhooks.sendWebhookEvent = async (event, options) => {
+    dispatched.push({ event, options });
+    return true;
+  };
+
+  try {
+    const userDoc = {
+      _id: "user-exhaust-id",
+      discord: { userId: "user-exhaust-123" },
+      oauth: {
+        encryptedRefreshToken: "valid-looking-token",
+        version: 1,
+        refreshFailCount: 2
+      }
+    };
+
+    const mockModel = {
+      updateOne: jest.fn(() => Promise.resolve({ matchedCount: 1, modifiedCount: 1 }))
+    };
+
+    await manager._test.markRefreshFailure(userDoc, new Error("Discord API timeout"), {
+      model: mockModel,
+      failMax: 3,
+      tokenField: "oauth"
+    });
+
+    expect(dispatched.length).toBe(1);
+    const alert = dispatched[0].event;
+    expect(alert.target).toBe("ALERT");
+    expect(alert.category).toBe("TOKEN");
+    expect(alert.code).toBe("oauth.token_exhausted");
+    expect(alert.severity).toBe("ERROR");
+    expect(alert.state).toBe("OPEN");
+    expect(alert.title).toBe("OAUTH REFRESH EXHAUSTED");
+    expect(alert.dedupeKey).toBe("oauth-exhausted:user-exhaust-123:oauth");
+    expect(alert.fields.some(f => f.name === "User ID" && f.value === "user-exhaust-123")).toBe(true);
+    expect(alert.fields.some(f => f.name === "รอบที่ล้มเหลว" && f.value === "3/3")).toBe(true);
+  } finally {
+    webhooks.sendWebhookEvent = origSendWebhookEvent;
+  }
+});
+
+test("oauthTokenManager: dispatches oauth.token_decrypt_failed alert when refresh token cannot be decrypted", async () => {
+  const webhooks = require("../discord/core/webhooks");
+  const origSendWebhookEvent = webhooks.sendWebhookEvent;
+  const dispatched = [];
+  webhooks.sendWebhookEvent = async (event, options) => {
+    dispatched.push({ event, options });
+    return true;
+  };
+
+  try {
+    const userDoc = {
+      _id: "user-corrupt-id",
+      discord: { userId: "user-corrupt-456" },
+      oauth: {
+        encryptedRefreshToken: "corrupted:payload:cannot:decrypt",
+        version: 1,
+        refreshFailCount: 0
+      }
+    };
+
+    const mockModel = {
+      findById: jest.fn(() => ({
+        lean: () => Promise.resolve(userDoc)
+      })),
+      updateOne: jest.fn(() => Promise.resolve({ matchedCount: 1, modifiedCount: 1 }))
+    };
+
+    const outcome = await manager._test.performTokenRefreshUnderLock({
+      doc: userDoc,
+      model: mockModel,
+      tokenField: "oauth",
+      failMax: 3
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toBe("Failed to decrypt stored refresh token");
+
+    const decryptAlert = dispatched.find(d => d.event.code === "oauth.token_decrypt_failed");
+    expect(decryptAlert).toBeDefined();
+    expect(decryptAlert.event.target).toBe("ALERT");
+    expect(decryptAlert.event.category).toBe("TOKEN");
+    expect(decryptAlert.event.severity).toBe("CRITICAL");
+    expect(decryptAlert.event.state).toBe("OPEN");
+    expect(decryptAlert.event.title).toBe("OAUTH TOKEN DECRYPT FAILED");
+    expect(decryptAlert.event.dedupeKey).toBe("oauth-decrypt-failed:user-corrupt-456:oauth");
+    expect(decryptAlert.event.fields.some(f => f.name === "User ID" && f.value === "user-corrupt-456")).toBe(true);
+  } finally {
+    webhooks.sendWebhookEvent = origSendWebhookEvent;
+  }
+});
+
+test("oauthTokenManager: dispatches oauth.background_sweep_error alert when background sweep crashes", async () => {
+  const webhooks = require("../discord/core/webhooks");
+  const origSendWebhookEvent = webhooks.sendWebhookEvent;
+  const dispatched = [];
+  webhooks.sendWebhookEvent = async (event, options) => {
+    dispatched.push({ event, options });
+    return true;
+  };
+
+  try {
+    const mockModel = {
+      find: jest.fn(() => {
+        throw new Error("MongoDB connection terminated abruptly");
+      })
+    };
+
+    await manager.start({ OAuthUserModel: mockModel, forceSweep: true });
+
+    const sweepAlert = dispatched.find(d => d.event.code === "oauth.background_sweep_error");
+    expect(sweepAlert).toBeDefined();
+    expect(sweepAlert.event.target).toBe("ALERT");
+    expect(sweepAlert.event.category).toBe("TOKEN");
+    expect(sweepAlert.event.severity).toBe("CRITICAL");
+    expect(sweepAlert.event.state).toBe("OPEN");
+    expect(sweepAlert.event.title).toBe("OAUTH BACKGROUND SWEEP FAILED");
+    expect(sweepAlert.event.dedupeKey).toBe("oauth-sweep-error");
+    expect(sweepAlert.event.fields.some(f => f.name === "สาเหตุ" && f.value.includes("MongoDB connection terminated"))).toBe(true);
+  } finally {
+    await manager.stop();
+    webhooks.sendWebhookEvent = origSendWebhookEvent;
+  }
+});
+
+test("oauthTokenManager: dispatchOAuthAlert gracefully swallows webhook errors without throwing", () => {
+  const webhooks = require("../discord/core/webhooks");
+  const origSendWebhookEvent = webhooks.sendWebhookEvent;
+  webhooks.sendWebhookEvent = () => {
+    throw new Error("Simulated webhook network crash");
+  };
+
+  try {
+    expect(() => {
+      manager._test.dispatchOAuthAlert({
+        code: "oauth.test_error",
+        title: "TEST ERROR"
+      });
+    }).not.toThrow();
+  } finally {
+    webhooks.sendWebhookEvent = origSendWebhookEvent;
+  }
+});
+
 

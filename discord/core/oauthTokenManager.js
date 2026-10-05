@@ -52,6 +52,21 @@ const diagnosticStats = {
     lastError: null
 };
 
+function dispatchOAuthAlert(event, options = {}) {
+    try {
+        const { sendWebhookEvent } = require("./webhooks");
+        if (typeof sendWebhookEvent === "function") {
+            sendWebhookEvent({
+                target: "ALERT",
+                category: "TOKEN",
+                ...event
+            }, options).catch(() => {});
+        }
+    } catch {
+        // webhooks module may not be present in isolated test runners
+    }
+}
+
 function readPositiveNumber(value, fallback, min = 1) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed < min) return fallback;
@@ -336,6 +351,27 @@ async function markRefreshFailure(doc, err, { model = OAuthUser, now = Date.now(
     if (shouldRevoke) {
         set[tokenPath(tokenField, "revokedAt")] = now;
         diagnosticStats.revokedCount++;
+
+        if (nextFailCount >= effectiveFailMax) {
+            dispatchOAuthAlert({
+                code: "oauth.token_exhausted",
+                severity: "ERROR",
+                state: "OPEN",
+                title: "OAUTH REFRESH EXHAUSTED",
+                description: "การรีเฟรช OAuth Token ล้มเหลวจนครบขีดจำกัดสูงสุด ระบบได้ตัดสิทธิ์และหยุดการต่ออายุเพื่อความปลอดภัย",
+                fields: [
+                    { name: "สถานะ", value: "OPEN" },
+                    { name: "User ID", value: String(userId) },
+                    { name: "Token Field", value: String(tokenField) },
+                    { name: "รอบที่ล้มเหลว", value: `${nextFailCount}/${effectiveFailMax}` },
+                    { name: "สาเหตุ", value: safeError(err) || "Unknown refresh error" },
+                    { name: "ผลกระทบ", value: "ผู้ใช้จะไม่สามารถใช้งานฟังก์ชันที่ต้องพึ่งพา OAuth Token ได้จนกว่าจะยืนยันตัวตนใหม่" },
+                    { name: "สิ่งที่ควรทำ", value: "แจ้งให้ผู้ใช้ยืนยันตัวตนใหม่ หรือตรวจสอบใน Owner Recovery Center" }
+                ],
+                dedupeKey: `oauth-exhausted:${userId}:${tokenField}`,
+                dedupeMs: 15 * 60 * 1000
+            });
+        }
     }
 
     try {
@@ -442,6 +478,22 @@ async function performTokenRefreshUnderLock({
     if (!rawRefreshToken) {
         const decryptError = new Error("Failed to decrypt stored refresh token");
         decryptError.code = "oauth_refresh_token_decrypt_failed";
+        dispatchOAuthAlert({
+            code: "oauth.token_decrypt_failed",
+            severity: "CRITICAL",
+            state: "OPEN",
+            title: "OAUTH TOKEN DECRYPT FAILED",
+            description: "ตรวจพบโทเคนในฐานข้อมูลไม่สามารถถอดรหัสได้ อาจเกิดจาก ENCRYPTION_KEY ไม่ตรงกับตอนเข้ารหัส หรือข้อมูลเสียหาย",
+            fields: [
+                { name: "สถานะ", value: "OPEN" },
+                { name: "User ID", value: String(userId) },
+                { name: "Token Field", value: String(tokenField) },
+                { name: "ผลกระทบ", value: "ไม่สามารถนำโทเคนไปใช้งานหรือต่ออายุได้" },
+                { name: "สิ่งที่ควรทำ", value: "ตรวจสอบความถูกต้องของ ENCRYPTION_KEY หรือให้ผู้ใช้ยืนยันตัวตนใหม่เพื่อบันทึกโทเคนชุดใหม่" }
+            ],
+            dedupeKey: `oauth-decrypt-failed:${userId}:${tokenField}`,
+            dedupeMs: 30 * 60 * 1000
+        });
         return markRefreshFailure(fresh, decryptError, { model, now, failMax: effectiveFailMax, env, tokenField });
     }
 
@@ -1406,6 +1458,22 @@ async function runScheduledSweep() {
     } catch (err) {
         diagnosticStats.lastError = safeError(err);
         console.error("[OAUTH_MANAGER] background sweep error:", safeError(err));
+        dispatchOAuthAlert({
+            code: "oauth.background_sweep_error",
+            severity: "CRITICAL",
+            state: "OPEN",
+            title: "OAUTH BACKGROUND SWEEP FAILED",
+            description: "ตรวจพบข้อผิดพลาดร้ายแรงระหว่างการรัน Background Sweep สำหรับต่ออายุ OAuth Token อัตโนมัติ",
+            fields: [
+                { name: "สถานะ", value: "OPEN" },
+                { name: "Error Code", value: err?.code || "SWEEP_FAILED" },
+                { name: "สาเหตุ", value: safeError(err) || "Unknown sweep error" },
+                { name: "ผลกระทบ", value: "การต่ออายุโทเคนเบื้องหลังอาจหยุดชะงัก โทเคนที่ใกล้หมดอายุอาจไม่ได้รับการรีเฟรชทันเวลา" },
+                { name: "สิ่งที่ควรทำ", value: "ตรวจสอบการเชื่อมต่อฐานข้อมูล MongoDB หรือตรวจสอบ Error Log ในเซิร์ฟเวอร์" }
+            ],
+            dedupeKey: "oauth-sweep-error",
+            dedupeMs: 15 * 60 * 1000
+        });
     } finally {
         refreshInFlight = false;
         inFlightRefreshPromise = null;
@@ -1521,6 +1589,7 @@ module.exports = {
     getDiagnostics,
 
     _test: {
+        dispatchOAuthAlert,
         resolveFailMax,
         isInvalidGrantError,
         assertValidTokenField,
