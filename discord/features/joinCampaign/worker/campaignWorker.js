@@ -493,13 +493,27 @@ class CampaignWorker {
                             return;
                         }
 
-                        // STEP 2: JIT Token Retrieval & Refresh (Passing configured refreshMarginMs)
-                        const tokenResult = await tokenManager.getAccessToken({
-                            userId,
-                            tokenField: item.tokenField || "oauth",
-                            marginMs: config.refreshMarginMs,
-                            env: process.env
-                        });
+                        // STEP 2: JIT Token Retrieval & Refresh (Passing configured refreshMarginMs and abort signal)
+                        let tokenResult;
+                        try {
+                            tokenResult = await tokenManager.getAccessToken({
+                                userId,
+                                tokenField: item.tokenField || "oauth",
+                                marginMs: config.refreshMarginMs,
+                                env: process.env,
+                                signal: this._abortController?.signal
+                            });
+                        } catch (err) {
+                            if (this._isStopping && (err?.name === "AbortError" || this._abortController?.signal?.aborted)) {
+                                return;
+                            }
+                            tokenResult = { ok: false, code: "error", error: err };
+                        }
+
+                        if (this._isStopping && (tokenResult?.code === "aborted" || tokenResult?.error?.name === "AbortError" || this._abortController?.signal?.aborted)) {
+                            // Interrupted by shutdown before token retrieval completed
+                            return;
+                        }
 
                         const accessToken = tokenResult?.accessToken;
                         if (!accessToken) {
@@ -598,6 +612,9 @@ class CampaignWorker {
                             await recordItemOutcome({ userId, status: "failed", error: errReason });
                         }
                     } catch (taskErr) {
+                        if (this._isStopping && (taskErr?.name === "AbortError" || this._abortController?.signal?.aborted)) {
+                            return;
+                        }
                         console.error(`[JoinCampaign] Task execution error for user ${item.userId}:`, taskErr?.message);
                         try {
                             await recordItemOutcome({ userId: item.userId, status: "failed", error: taskErr?.message || "task_error" });

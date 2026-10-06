@@ -134,11 +134,30 @@ function isOAuthInvalidGrantError(err) {
         (Number(err?.status) === 400 && String(err?.message || "").includes("invalid_grant"));
 }
 
-function sleep(ms) {
+function sleep(ms, signal) {
+    if (signal?.aborted) {
+        const err = new Error("This operation was aborted");
+        err.name = "AbortError";
+        return Promise.reject(err);
+    }
     // Retry backoff is awaited control flow; an unref'd timer can let Node exit
     // while the returned promise is still pending.
-    return new Promise(resolve => {
-        setTimeout(resolve, ms);
+    return new Promise((resolve, reject) => {
+        let timer;
+        let onAbort;
+        if (signal) {
+            onAbort = () => {
+                clearTimeout(timer);
+                const err = new Error("This operation was aborted");
+                err.name = "AbortError";
+                reject(err);
+            };
+            signal.addEventListener("abort", onAbort, { once: true });
+        }
+        timer = setTimeout(() => {
+            if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
     });
 }
 
@@ -295,29 +314,51 @@ async function fetchWithRetry(pathAndSearch, options = {}) {
     const timeoutMs = Math.max(1000, Number(rawTimeoutMs || 10000) || 10000);
     let lastError = null;
 
+    if (fetchOptions.signal?.aborted) {
+        const abortErr = new Error("This operation was aborted");
+        abortErr.name = "AbortError";
+        throw abortErr;
+    }
+
     for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (fetchOptions.signal?.aborted) {
+            const abortErr = new Error("This operation was aborted");
+            abortErr.name = "AbortError";
+            throw abortErr;
+        }
+
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         timer.unref?.();
 
+        let abortListener;
+        if (fetchOptions.signal) {
+            abortListener = () => controller.abort();
+            fetchOptions.signal.addEventListener("abort", abortListener, { once: true });
+        }
+
         try {
             const res = await requestDiscordApi(endpointPath, {
                 ...fetchOptions,
-                signal: fetchOptions.signal || controller.signal
+                signal: controller.signal
             });
 
             if (shouldRetryResponse(res.status, attempt, attempts)) {
-                await sleep(calculateRetryDelay(res, attempt));
+                await sleep(calculateRetryDelay(res, attempt), fetchOptions.signal);
                 continue;
             }
 
             return res;
         } catch (err) {
             lastError = err;
+            if (fetchOptions.signal?.aborted || err?.name === "AbortError") throw err;
             if (err?.retryable === false || attempt >= attempts) throw err;
-            await sleep(Math.min(250 * attempt, 1500));
+            await sleep(Math.min(250 * attempt, 1500), fetchOptions.signal);
         } finally {
             clearTimeout(timer);
+            if (fetchOptions.signal && abortListener) {
+                fetchOptions.signal.removeEventListener("abort", abortListener);
+            }
         }
     }
 
@@ -465,11 +506,18 @@ async function exchangeCode(code, redirectUri) {
     return res.json();
 }
 
-async function refreshToken(refreshTokenValue, redirectUri) {
+async function refreshToken(refreshTokenValue, redirectUri, options = {}) {
     if (!refreshTokenValue || typeof refreshTokenValue !== "string") {
         const error = new Error("OAuth refresh token is required");
         error.code = "oauth_refresh_token_missing";
         throw error;
+    }
+
+    let effectiveRedirect = redirectUri;
+    let effectiveOpts = options;
+    if (redirectUri && typeof redirectUri === "object" && !(redirectUri instanceof String)) {
+        effectiveOpts = redirectUri;
+        effectiveRedirect = effectiveOpts.redirectUri || null;
     }
 
     const body = {
@@ -478,7 +526,7 @@ async function refreshToken(refreshTokenValue, redirectUri) {
         grant_type: "refresh_token",
         refresh_token: refreshTokenValue
     };
-    if (redirectUri) body.redirect_uri = redirectUri;
+    if (effectiveRedirect) body.redirect_uri = effectiveRedirect;
 
     const res = await apiFetch("/oauth2/token", {
         label: "refreshToken",
@@ -486,7 +534,9 @@ async function refreshToken(refreshTokenValue, redirectUri) {
         headers: {
             "Content-Type": "application/x-www-form-urlencoded"
         },
-        body: new URLSearchParams(body)
+        body: new URLSearchParams(body),
+        signal: effectiveOpts?.signal,
+        timeoutMs: effectiveOpts?.timeoutMs
     });
 
     return res.json();

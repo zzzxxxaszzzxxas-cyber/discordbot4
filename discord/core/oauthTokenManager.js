@@ -273,14 +273,73 @@ async function commitVerificationActivation({
     });
 }
 
-async function withTokenRefreshLock(key, fn) {
+function raceWithSignal(promise, signal) {
+    if (!signal) return promise;
+    if (signal.aborted) {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        return Promise.reject(err);
+    }
+    return new Promise((resolve, reject) => {
+        let onAbort;
+        onAbort = () => {
+            const err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            reject(err);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        Promise.resolve(promise).then(
+            val => {
+                signal.removeEventListener("abort", onAbort);
+                resolve(val);
+            },
+            err => {
+                signal.removeEventListener("abort", onAbort);
+                reject(err);
+            }
+        );
+    });
+}
+
+async function withTokenRefreshLock(key, fn, signal = null) {
+    if (signal?.aborted) {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        throw err;
+    }
+
     const previous = refreshLocks.get(key) || Promise.resolve();
     let release;
     const gate = new Promise(resolve => { release = resolve; });
     const current = previous.catch(() => {}).then(() => gate);
     refreshLocks.set(key, current);
-    await previous.catch(() => {});
+
     try {
+        if (signal) {
+            let abortListener;
+            const abortPromise = new Promise((_, reject) => {
+                abortListener = () => {
+                    const err = new Error("The operation was aborted");
+                    err.name = "AbortError";
+                    reject(err);
+                };
+                signal.addEventListener("abort", abortListener, { once: true });
+            });
+            try {
+                await Promise.race([previous.catch(() => {}), abortPromise]);
+            } finally {
+                if (abortListener) signal.removeEventListener("abort", abortListener);
+            }
+        } else {
+            await previous.catch(() => {});
+        }
+
+        if (signal?.aborted) {
+            const err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            throw err;
+        }
+
         return await fn();
     } finally {
         release();
@@ -422,12 +481,27 @@ async function performTokenRefreshUnderLock({
     env = process.env,
     redirectUri,
     force = false,
-    marginMs = DEFAULT_ON_DEMAND_MARGIN_MS
+    marginMs = DEFAULT_ON_DEMAND_MARGIN_MS,
+    signal = null
 }) {
     assertValidTokenField(tokenField);
     const effectiveFailMax = resolveFailMax(failMax, env);
     const lockUserId = doc.discord?.userId || String(doc._id);
-    const fresh = await readFreshOAuthDocument(model, doc, tokenField);
+
+    if (signal?.aborted) {
+        return { ok: false, code: "aborted", reason: "Operation aborted", userId: lockUserId, tokenField };
+    }
+
+    let fresh;
+    try {
+        fresh = await raceWithSignal(readFreshOAuthDocument(model, doc, tokenField), signal);
+    } catch (err) {
+        if (signal?.aborted || err?.name === "AbortError") {
+            return { ok: false, code: "aborted", error: err, reason: "Operation aborted", userId: lockUserId, tokenField };
+        }
+        throw err;
+    }
+
     if (!fresh) return conflictOutcome(tokenField, lockUserId, "document_missing");
     if (fresh.deletedAt) {
         return { ok: false, code: "user_deleted", reason: "User is soft-deleted", userId: lockUserId, tokenField };
@@ -469,6 +543,10 @@ async function performTokenRefreshUnderLock({
         }
     }
 
+    if (signal?.aborted) {
+        return { ok: false, code: "aborted", reason: "Operation aborted", userId, tokenField };
+    }
+
     let rawRefreshToken;
     try {
         rawRefreshToken = decryptToken(previousRefreshTokenEncrypted);
@@ -499,8 +577,20 @@ async function performTokenRefreshUnderLock({
 
     let tokenData;
     try {
-        tokenData = await discord.refreshToken(rawRefreshToken, redirectUri || resolveRedirectUriForField(tokenField));
+        const refreshArgs = [rawRefreshToken, redirectUri || resolveRedirectUriForField(tokenField)];
+        if (signal) refreshArgs.push({ signal });
+        tokenData = await discord.refreshToken(...refreshArgs);
     } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") {
+            return {
+                ok: false,
+                code: "aborted",
+                error,
+                reason: "Token refresh was aborted",
+                userId,
+                tokenField
+            };
+        }
         return markRefreshFailure(fresh, error, { model, now, failMax: effectiveFailMax, env, tokenField });
     }
 
@@ -554,7 +644,8 @@ async function getAccessToken({
     discord = discordApi,
     env = process.env,
     now = Date.now(),
-    marginMs = DEFAULT_ON_DEMAND_MARGIN_MS
+    marginMs = DEFAULT_ON_DEMAND_MARGIN_MS,
+    signal = null
 } = {}) {
     if (!userId) {
         const error = new Error("userId is required to get access token");
@@ -564,15 +655,38 @@ async function getAccessToken({
 
     assertValidTokenField(tokenField);
 
-    const doc = await model.findOne({
-        "discord.userId": String(userId),
-        $or: [
-            { deletedAt: { $exists: false } },
-            { deletedAt: null }
-        ]
-    })
-        .select({ discord: 1, deletedAt: 1, [tokenField]: 1 })
-        .lean();
+    if (signal?.aborted) {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        return { ok: false, code: "aborted", error, reason: "Operation aborted", userId, tokenField };
+    }
+
+    let doc;
+    try {
+        doc = await raceWithSignal(
+            model.findOne({
+                "discord.userId": String(userId),
+                $or: [
+                    { deletedAt: { $exists: false } },
+                    { deletedAt: null }
+                ]
+            })
+                .select({ discord: 1, deletedAt: 1, [tokenField]: 1 })
+                .lean(),
+            signal
+        );
+    } catch (err) {
+        if (signal?.aborted || err?.name === "AbortError") {
+            return { ok: false, code: "aborted", error: err, reason: "Operation aborted", userId, tokenField };
+        }
+        throw err;
+    }
+
+    if (signal?.aborted) {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        return { ok: false, code: "aborted", error, reason: "Operation aborted", userId, tokenField };
+    }
 
     if (!doc || doc.deletedAt) {
         return { ok: false, code: doc ? "user_deleted" : "user_not_found", reason: doc ? "User is soft-deleted" : "User not found in OAuth registry", userId, tokenField };
@@ -608,20 +722,28 @@ async function getAccessToken({
     const redirectUri = resolveRedirectUriForField(tokenField, env);
     const lockKey = `${userId}:${tokenField}`;
 
-    return withTokenRefreshLock(lockKey, async () => {
-        return performTokenRefreshUnderLock({
-            doc,
-            model,
-            discord,
-            tokenField,
-            now,
-            marginMs,
-            failMax: getOAuthRefreshConfig(env).failMax,
-            env,
-            redirectUri,
-            force: forceRefresh
-        });
-    });
+    try {
+        return await withTokenRefreshLock(lockKey, async () => {
+            return performTokenRefreshUnderLock({
+                doc,
+                model,
+                discord,
+                tokenField,
+                now,
+                marginMs,
+                failMax: getOAuthRefreshConfig(env).failMax,
+                env,
+                redirectUri,
+                force: forceRefresh,
+                signal
+            });
+        }, signal);
+    } catch (err) {
+        if (signal?.aborted || err?.name === "AbortError") {
+            return { ok: false, code: "aborted", error: err, reason: "Operation aborted", userId, tokenField };
+        }
+        throw err;
+    }
 }
 
 function buildRefreshQuery(now, marginMs, failMax, tokenField = "oauth") {

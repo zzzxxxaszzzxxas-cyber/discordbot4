@@ -2445,4 +2445,215 @@ test("P2 audit: stopCurrentWorker aborts in-flight task via AbortSignal cleanly"
     assert.equal(updatedJob.status, "INTERRUPTED", "Stopping worker must transition job to INTERRUPTED");
 });
 
+test("P2 audit: tokenManager.getAccessToken receives AbortSignal and stops worker cleanly without marking item failed", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "tok_abort_test_" + Date.now();
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 5,
+        selectedAmount: 5
+    });
+
+    repo.createItems(testJobId, [{ userId: "u_tok_abort", tokenField: "oauth" }]);
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    members: { fetch: async () => new Map() }
+                }]
+            ])
+        }
+    };
+
+    let signalReceived = null;
+    let tokenRetrievalAborted = false;
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({ candidates: [], hasMore: false }),
+        getAccessToken: async (opts) => {
+            signalReceived = opts?.signal;
+            assert.ok(signalReceived, "tokenManager.getAccessToken must receive AbortSignal from worker");
+
+            return new Promise((resolve) => {
+                opts.signal.addEventListener("abort", () => {
+                    tokenRetrievalAborted = true;
+                    const err = new Error("The operation was aborted");
+                    err.name = "AbortError";
+                    resolve({ ok: false, code: "aborted", error: err });
+                });
+            });
+        }
+    };
+
+    let apiCalled = false;
+
+    const startResult = await campaignWorker.startWorker({
+        job,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        targetMemberIds: new Set(),
+        discord: {
+            addMemberToGuild: async () => {
+                apiCalled = true;
+                return { ok: true, status: 201 };
+            }
+        }
+    });
+
+    // Give worker microtasks to enter getAccessToken
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Call stopCurrentWorker while getAccessToken is in flight
+    campaignWorker.stopCurrentWorker();
+
+    await startResult.workerPromise;
+
+    assert.equal(tokenRetrievalAborted, true, "In-flight getAccessToken must receive abort event on stop");
+    assert.equal(apiCalled, false, "Discord API should not be called when token retrieval was aborted");
+
+    // Item must NOT be marked as failed
+    const item = repo.db.prepare("SELECT * FROM join_campaign_items WHERE campaign_id = ? AND user_id = ?").get(testJobId, "u_tok_abort");
+    assert.notEqual(item.status, "failed", "Aborted token retrieval must NOT mark item as failed");
+
+    const updatedJob = repo.findJobById(testJobId);
+    assert.equal(updatedJob.status, "INTERRUPTED", "Worker must shut down with INTERRUPTED status");
+});
+
+test("P2 audit: oauthTokenManager.getAccessToken aborts without penalizing token with markRefreshFailure", async () => {
+    process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const oauthTokenManager = require("../core/oauthTokenManager");
+    const { encryptToken } = require("../verification/utils/crypto");
+    const testUserId = "user_abort_guard_" + Date.now();
+    const abortController = new AbortController();
+
+    let updateCount = 0;
+    const mockModel = {
+        findOne: () => ({
+            select: () => ({
+                lean: async () => ({
+                    _id: "mongo_doc_id",
+                    discord: { userId: testUserId },
+                    oauth: {
+                        expiresAt: Date.now() - 10000, // Expired -> triggers refresh
+                        encryptedRefreshToken: encryptToken("valid_refresh_secret"),
+                        refreshFailCount: 0
+                    }
+                })
+            })
+        }),
+        findById: () => ({
+            select: () => ({
+                lean: async () => ({
+                    _id: "mongo_doc_id",
+                    discord: { userId: testUserId },
+                    oauth: {
+                        expiresAt: Date.now() - 10000,
+                        encryptedRefreshToken: encryptToken("valid_refresh_secret"),
+                        refreshFailCount: 0
+                    }
+                })
+            })
+        }),
+        updateOne: async () => {
+            updateCount++;
+            return { modifiedCount: 1 };
+        }
+    };
+
+    const mockDiscord = {
+        refreshToken: async (_tok, _uri, opts) => {
+            assert.ok(opts?.signal, "discord.refreshToken must receive signal");
+            return new Promise((_, reject) => {
+                opts.signal.addEventListener("abort", () => {
+                    const err = new Error("The operation was aborted");
+                    err.name = "AbortError";
+                    reject(err);
+                });
+            });
+        }
+    };
+
+    // Run getAccessToken with signal
+    const promise = oauthTokenManager.getAccessToken({
+        userId: testUserId,
+        model: mockModel,
+        discord: mockDiscord,
+        signal: abortController.signal
+    });
+
+    // Abort after small delay
+    await new Promise(r => setTimeout(r, 20));
+    abortController.abort();
+
+    const res = await promise;
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, "aborted");
+    assert.equal(updateCount, 0, "Aborted token refresh must NOT write failure or increment refreshFailCount in MongoDB");
+});
+
+test("P2 audit: withTokenRefreshLock unblocks immediately when signal aborts and releases lock gate", async () => {
+    const oauthTokenManager = require("../core/oauthTokenManager");
+    const testKey = "lock_test_" + Date.now();
+    const controller = new AbortController();
+
+    let releaseFirst;
+    const firstAcquired = new Promise(resolve => { releaseFirst = resolve; });
+
+    // First lock holder holds the lock
+    const firstLockPromise = oauthTokenManager.withOAuthTokenStateLock(testKey, async () => {
+        releaseFirst();
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return "first_done";
+    });
+
+    await firstLockPromise;
+
+    // Concurrently queue second lock with an abort signal
+    let secondStarted = false;
+    const secondController = new AbortController();
+    secondController.abort(); // already aborted
+
+    await assert.rejects(
+        async () => {
+            await oauthTokenManager.withOAuthTokenStateLock(testKey, async () => {
+                secondStarted = true;
+            }, secondController.signal);
+        },
+        /operation was aborted/i
+    );
+
+    assert.equal(secondStarted, false, "Aborted lock must not execute fn");
+
+    // Third call should acquire lock immediately without deadlock
+    const thirdResult = await oauthTokenManager.withOAuthTokenStateLock(testKey, async () => {
+        return "third_success";
+    });
+
+    assert.equal(thirdResult, "third_success", "Subsequent lock call must succeed without deadlock");
+});
+
+test("P2 audit: discordAPI.refreshToken forwards AbortSignal and aborts in-flight network request", async () => {
+    const discordApi = require("../verification/utils/discordAPI");
+    const controller = new AbortController();
+
+    controller.abort(); // Pre-aborted
+
+    await assert.rejects(
+        async () => {
+            await discordApi.refreshToken("mock_refresh_token", "https://redirect.com", { signal: controller.signal });
+        },
+        /This operation was aborted/
+    );
+});
+
+
 
