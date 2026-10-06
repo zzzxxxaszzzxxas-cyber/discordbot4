@@ -2,7 +2,9 @@
 
 const crypto = require("node:crypto");
 const { getJoinCampaignConfig } = require("../config");
-const { runPreflight } = require("./preflightService");
+const { runPreflight, getLiveTargetMemberIds } = require("./preflightService");
+const { countEligibleCandidates } = require("./candidateQueryService");
+const oauthTokenManager = require("../../../core/oauthTokenManager");
 const { buildPreflightConfirmationPayload } = require("../ui/confirmationBuilder");
 const campaignWorker = require("../worker/campaignWorker");
 const { getMode } = require("../modes/modeRegistry");
@@ -124,6 +126,28 @@ class JoinCampaignService {
         const mode = getMode(session.modeId);
         const { preflight } = session;
 
+        // Refresh live target membership right before start to ensure fresh snapshot
+        let freshTargetMemberIds = preflight.targetMemberIds;
+        let freshReadyCount = preflight.readyCount;
+        try {
+            let targetGuild = client.guilds?.cache?.get(preflight.targetGuildId);
+            if (!targetGuild && client.guilds?.fetch) {
+                targetGuild = await client.guilds.fetch(preflight.targetGuildId).catch(() => null);
+            }
+            if (targetGuild) {
+                freshTargetMemberIds = await getLiveTargetMemberIds(targetGuild);
+                freshReadyCount = await countEligibleCandidates({
+                    mode,
+                    baseConfig: {
+                        sourceGuildId: preflight.sourceGuildId,
+                        targetGuildId: preflight.targetGuildId
+                    },
+                    tokenManager: oauthTokenManager,
+                    targetMemberIds: freshTargetMemberIds
+                });
+            }
+        } catch (_) {}
+
         // Persist initial job in SQLite (Notice: webhookUrl is NOT stored in SQLite)
         let job;
         try {
@@ -136,7 +160,7 @@ class JoinCampaignService {
                 targetGuildName: preflight.targetGuildName,
                 status: "RUNNING",
                 requestedAmount: preflight.requestedQuota,
-                selectedAmount: preflight.readyCount,
+                selectedAmount: freshReadyCount,
                 joinedCount: 0,
                 alreadyCount: 0,
                 failedCount: 0,
@@ -177,7 +201,7 @@ class JoinCampaignService {
                     ...panel,
                     activeJobId: jobId,
                     requestedAmount: preflight.requestedQuota,
-                    lastReadyCount: preflight.readyCount
+                    lastReadyCount: freshReadyCount
                 });
             }
         } catch (_) {}
@@ -189,7 +213,7 @@ class JoinCampaignService {
                     ...job,
                     startedByChannelId: session.channelId,
                     webhookUrl: session.webhookUrl,
-                    targetMemberIds: preflight.targetMemberIds
+                    targetMemberIds: freshTargetMemberIds
                 },
                 client,
                 repository

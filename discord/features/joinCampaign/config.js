@@ -27,7 +27,7 @@ function getJoinCampaignConfig(env = process.env) {
         allowedGuilds,
         batchSize,
         maxUsers: batchSize,
-        delayMs: readPositiveInt(env.JOIN_CAMPAIGN_DELAY_MS, 1500, 100, 60000),
+        maxConcurrency: readPositiveInt(env.JOIN_CAMPAIGN_MAX_CONCURRENCY, 32, 1, 64),
         progressEvery: readPositiveInt(env.JOIN_CAMPAIGN_PROGRESS_EVERY, 50, 1, 1000),
         refreshMarginMs: readPositiveInt(env.JOIN_CAMPAIGN_REFRESH_MARGIN_MS, 60 * 60 * 1000, 60 * 1000, 7 * 24 * 60 * 60 * 1000),
         failMax: readPositiveInt(env.OAUTH_TOKEN_REFRESH_FAIL_MAX, 3, 1, 20),

@@ -80,7 +80,9 @@ discord/features/joinCampaign/
 
 database/sqlite/
 ├── migrations/
-│   └── 011_join_campaign.sql    # Tables: join_campaign_jobs, join_campaign_items, join_campaign_panels
+│   ├── 005_join_campaign.sql              # Initial schema: jobs, candidate items, panels
+│   ├── 006_join_campaign_hardening.sql    # Recovery count and leasing indices
+│   └── 007_join_campaign_clean_schema.sql # Drop webhook_url, add current_throughput, single active index
 └── repositories/core/
     └── JoinCampaignRepository.js # SQLite Repository for all job checkpoints, items, and panel states
 

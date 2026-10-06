@@ -2,10 +2,16 @@
 
 const campaignWorker = require("../worker/campaignWorker");
 const { getLiveTargetMemberIds } = require("../services/preflightService");
+const { getJoinCampaignConfig } = require("../config");
 
 const MAX_RECOVERY_ATTEMPTS = 5;
 
 async function runStartupRecovery({ client, repository, tokenManager, discord }) {
+    const config = getJoinCampaignConfig();
+    if (!config.enabled) {
+        return { recovered: false, reason: "disabled_by_master_switch" };
+    }
+
     if (!repository || typeof repository.findActiveRunningJob !== "function") {
         return { recovered: false, reason: "no_repository" };
     }
@@ -18,12 +24,26 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
 
         const currentRecoveryCount = interruptedJob.recoveryCount || interruptedJob.recovery_count || 0;
         if (currentRecoveryCount >= MAX_RECOVERY_ATTEMPTS) {
+            const failReason = `กู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้ง`;
             console.warn(`[JoinCampaign] ⚠️ งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด (${MAX_RECOVERY_ATTEMPTS} ครั้ง) ยกเลิกการกู้คืนเพื่อความปลอดภัย`);
             repository.updateJob(interruptedJob.id, {
                 status: "FAILED",
-                lastError: `กู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้ง`,
+                lastError: failReason,
                 completedAt: Date.now()
             });
+            try {
+                const { sendWebhookEvent } = require("../../../core/webhooks");
+                if (typeof sendWebhookEvent === "function") {
+                    sendWebhookEvent({
+                        category: "SYSTEM",
+                        severity: "CRITICAL",
+                        actionRequired: true,
+                        code: "join_campaign.max_recovery_exceeded",
+                        title: "Join Campaign: การกู้คืนล้มเหลวเกินกำหนด",
+                        description: `งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้งและถูกยกเลิก`
+                    });
+                }
+            } catch (_) {}
             return { recovered: false, reason: "max_recovery_exceeded" };
         }
 

@@ -19,6 +19,7 @@ const discordApi = require("../verification/utils/discordAPI");
 const database = require("../../database/index");
 
 test.beforeEach(() => {
+    process.env.JOIN_CAMPAIGN_ENABLED = "true";
     try {
         const repo = database.repositories.joinCampaign;
         repo.db.prepare("DELETE FROM join_campaign_jobs").run();
@@ -1118,4 +1119,208 @@ test("Join Campaign: Preflight strictly validates requested amount and bot membe
             delete process.env.JOIN_CAMPAIGN_ENABLED;
         }
     }
+});
+
+test("P0 audit: seenUsers ownership ensures new candidates are enqueued and not skipped", async () => {
+    const repo = database.repositories.joinCampaign;
+    const jobId = "camp_test_p0_seen_" + Date.now();
+    repo.createJob({
+        id: jobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 5,
+        selectedAmount: 5
+    });
+
+    const candidateDocs = [
+        { userId: "candidate_alpha", tokenField: "oauth" },
+        { userId: "candidate_beta", tokenField: "oauth" },
+        { userId: "candidate_gamma", tokenField: "oauth" }
+    ];
+
+    // Real-like tokenManager that respects the contract: seenUsers is read-only exclusion check, not mutated
+    const seenTracker = new Set();
+    const tokenManager = {
+        listAccessTokenCandidates: async ({ seenUsers }) => {
+            // Must NOT mutate caller's seenUsers
+            const candidates = candidateDocs.filter(d => !(seenUsers instanceof Set && seenUsers.has(d.userId)));
+            return {
+                candidates,
+                hasMore: false
+            };
+        },
+        getAccessToken: async () => ({ accessToken: "valid_token" })
+    };
+
+    const targetGuild = {
+        id: "123456789012345678",
+        name: "Target Server",
+        members: {
+            list: async () => new Map()
+        }
+    };
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([["123456789012345678", targetGuild]])
+        }
+    };
+
+    const joinedUsers = [];
+    const mockDiscord = {
+        addMemberToGuild: async (guildId, userId) => {
+            joinedUsers.push(userId);
+            return { status: 201 };
+        }
+    };
+
+    const workerResult = await campaignWorker.startWorker({
+        job: {
+            id: jobId,
+            mode: "ALL_TO_TARGET",
+            targetGuildId: "123456789012345678",
+            requestedAmount: 3,
+            currentConcurrency: 2
+        },
+        client: mockClient,
+        repository: repo,
+        tokenManager,
+        discord: mockDiscord,
+        config: { enabled: true, maxConcurrency: 2, maxRateLimitRetries: 3 }
+    });
+
+    await workerResult.workerPromise;
+
+    const job = repo.findJobById(jobId);
+    assert.equal(job.status, "COMPLETED");
+    assert.equal(job.joinedCount, 3);
+    assert.deepEqual(joinedUsers.sort(), ["candidate_alpha", "candidate_beta", "candidate_gamma"].sort());
+});
+
+test("P1 audit: master switch blocks startupRecovery when JOIN_CAMPAIGN_ENABLED=false", async () => {
+    const repo = database.repositories.joinCampaign;
+    const jobId = "camp_test_recovery_switch_" + Date.now();
+    repo.createJob({
+        id: jobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 10,
+        selectedAmount: 10
+    });
+
+    const prevEnabled = process.env.JOIN_CAMPAIGN_ENABLED;
+    process.env.JOIN_CAMPAIGN_ENABLED = "false";
+    try {
+        const { runStartupRecovery } = require("../features/joinCampaign/recovery/startupRecovery");
+        const res = await runStartupRecovery({
+            client: { guilds: { cache: new Map() } },
+            repository: repo
+        });
+        assert.equal(res.recovered, false);
+        assert.equal(res.reason, "disabled_by_master_switch");
+    } finally {
+        if (prevEnabled !== undefined) {
+            process.env.JOIN_CAMPAIGN_ENABLED = prevEnabled;
+        } else {
+            delete process.env.JOIN_CAMPAIGN_ENABLED;
+        }
+    }
+});
+
+test("P1 audit: graceful shutdown sets status to INTERRUPTED without completedAt and allows resume", async () => {
+    const repo = database.repositories.joinCampaign;
+    const jobId = "camp_test_shutdown_interrupt_" + Date.now();
+    repo.createJob({
+        id: jobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 10,
+        selectedAmount: 10
+    });
+
+    const targetGuild = {
+        id: "123456789012345678",
+        name: "Target Server",
+        members: {
+            list: async () => new Map()
+        }
+    };
+    const mockClient = {
+        guilds: {
+            cache: new Map([["123456789012345678", targetGuild]])
+        }
+    };
+
+    const tokenManager = {
+        listAccessTokenCandidates: async () => ({
+            candidates: Array.from({ length: 10 }, (_, i) => ({ userId: `user_${i}`, tokenField: "oauth" })),
+            hasMore: false
+        }),
+        getAccessToken: async () => ({ accessToken: "valid_token" })
+    };
+
+    let joined = 0;
+    const mockDiscord = {
+        addMemberToGuild: async () => {
+            joined++;
+            if (joined === 2) {
+                // Signal graceful shutdown mid-run
+                campaignWorker.stopCurrentWorker();
+            }
+            return { status: 201 };
+        }
+    };
+
+    const workerResult = await campaignWorker.startWorker({
+        job: {
+            id: jobId,
+            mode: "ALL_TO_TARGET",
+            targetGuildId: "123456789012345678",
+            requestedAmount: 10,
+            currentConcurrency: 1
+        },
+        client: mockClient,
+        repository: repo,
+        tokenManager,
+        discord: mockDiscord,
+        config: { enabled: true, maxConcurrency: 1, maxRateLimitRetries: 3 }
+    });
+
+    await workerResult.workerPromise;
+
+    const job = repo.findJobById(jobId);
+    assert.equal(job.status, "INTERRUPTED");
+    assert.equal(job.completedAt, null);
+
+    // findActiveRunningJob must find the INTERRUPTED job for auto-resume
+    const resumable = repo.findActiveRunningJob();
+    assert.ok(resumable);
+    assert.equal(resumable.id, jobId);
+});
+
+test("P2 audit: createItems returns exact inserted count and getTrackedUserIds works", () => {
+    const repo = database.repositories.joinCampaign;
+    const campaignId = "camp_test_create_count_" + Date.now();
+
+    const insertedFirst = repo.createItems(campaignId, [
+        { userId: "u1", tokenField: "oauth" },
+        { userId: "u2", tokenField: "oauth" }
+    ]);
+    assert.equal(insertedFirst, 2);
+
+    // Insert with duplicates ignored
+    const insertedSecond = repo.createItems(campaignId, [
+        { userId: "u2", tokenField: "oauth" }, // duplicate -> ignored
+        { userId: "u3", tokenField: "oauth" }  // new -> inserted
+    ]);
+    assert.equal(insertedSecond, 1);
+
+    const tracked = repo.getTrackedUserIds(campaignId);
+    const completed = repo.getCompletedUserIds(campaignId);
+    assert.equal(tracked.size, 3);
+    assert.deepEqual(Array.from(tracked).sort(), ["u1", "u2", "u3"].sort());
+    assert.deepEqual(Array.from(completed).sort(), ["u1", "u2", "u3"].sort());
 });

@@ -13,7 +13,7 @@ async function* streamCandidates({
 }) {
     let afterId = startCursor || null;
     let hasMore = true;
-    const tracker = seenUsers instanceof Set ? seenUsers : new Set();
+    const tracker = seenUsers instanceof Set ? seenUsers : null;
     const sourceGuildId = mode?.requiresSource ? baseConfig.sourceGuildId : null;
     const allowAllGuilds = !mode?.requiresSource;
     const additionalMongoFilter = typeof mode?.buildMongoFilter === "function" ? mode.buildMongoFilter(baseConfig) : null;
@@ -60,12 +60,14 @@ async function countEligibleCandidates({
     targetMemberIds = new Set()
 }) {
     let readyCount = 0;
+    const countedUsers = new Set();
     const candidatesStream = streamCandidates({ mode, baseConfig, tokenManager });
 
     for await (const item of candidatesStream) {
         const candidate = item.candidate || item;
         const userId = String(candidate.userId || candidate.discord?.userId || "").trim();
-        if (userId && !targetMemberIds.has(userId)) {
+        if (userId && !targetMemberIds.has(userId) && !countedUsers.has(userId)) {
+            countedUsers.add(userId);
             readyCount++;
         }
     }

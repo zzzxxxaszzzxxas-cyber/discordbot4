@@ -10,6 +10,27 @@ const { buildPanelPayload } = require("../ui/panelBuilder");
 const { countEligibleCandidates } = require("../services/candidateQueryService");
 const { getLiveTargetMemberIds } = require("../services/preflightService");
 
+function dispatchSystemicAlert({ code, title, description, error, details = {} }) {
+    try {
+        const { sendWebhookEvent } = require("../../../core/webhooks");
+        if (typeof sendWebhookEvent === "function") {
+            sendWebhookEvent({
+                category: "SYSTEM",
+                severity: "CRITICAL",
+                actionRequired: true,
+                code: code || "join_campaign.systemic_error",
+                title: title || "Join Campaign Systemic Error",
+                description: description || error?.message || "Join campaign error",
+                fields: Object.entries(details).map(([name, value]) => ({
+                    name,
+                    value: String(value),
+                    inline: true
+                }))
+            });
+        }
+    } catch (_) {}
+}
+
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
 }
@@ -52,6 +73,10 @@ class CampaignWorker {
         targetMemberIds = null,
         config = getJoinCampaignConfig()
     }) {
+        if (!config.enabled) {
+            throw new Error("Join Campaign subsystem is disabled (JOIN_CAMPAIGN_ENABLED=false)");
+        }
+
         if (this.isRunning) {
             throw new Error("ตอนนี้มีงานดึงสมาชิกกำลังทำงานอยู่ กรุณารอให้งานเดิมเสร็จก่อนนะครับ");
         }
@@ -99,6 +124,15 @@ class CampaignWorker {
                 lastError: failClosedMsg,
                 completedAt: Date.now()
             });
+            dispatchSystemicAlert({
+                code: "join_campaign.target_guild_missing",
+                title: "Join Campaign: เซิร์ฟเวอร์ปลายทางไม่พร้อมใช้งาน",
+                description: failClosedMsg,
+                details: {
+                    campaignId: job.id,
+                    targetGuildId
+                }
+            });
             throw new Error(failClosedMsg);
         }
 
@@ -110,6 +144,10 @@ class CampaignWorker {
         let failedCount = Number(job.failedCount) || 0;
         let processedCount = Number(job.processedCount) || 0;
         let retryCount = Number(job.retryCount) || 0;
+
+        // Distinct retry trackers to avoid 5xx competing with 429 budget
+        const rateLimitRetries = new Map();
+        const networkRetries = new Map();
 
         // Bounded adaptive concurrency pool parameters
         const minConcurrency = 1;
@@ -373,7 +411,10 @@ class CampaignWorker {
                             currentConcurrency = Math.max(minConcurrency, Math.floor(currentConcurrency / 2));
 
                             const maxRateLimitRetries = Number(config.maxRateLimitRetries || 3);
-                            if (Number(item.attempts || 0) < maxRateLimitRetries) {
+                            const currentRlRetries = (rateLimitRetries.get(userId) || 0) + 1;
+                            rateLimitRetries.set(userId, currentRlRetries);
+
+                            if (currentRlRetries <= maxRateLimitRetries) {
                                 const explicitRetry = Number(res?.retryAfter);
                                 const retryAfterMs = Number.isFinite(explicitRetry) && explicitRetry > 0
                                     ? explicitRetry
@@ -395,8 +436,11 @@ class CampaignWorker {
                             consecutiveSuccesses = 0;
                             currentConcurrency = Math.max(minConcurrency, currentConcurrency - 1);
 
-                            if (item.attempts < 2) {
-                                const delay = Math.min(1000 * Math.pow(2, item.attempts + 1), 12000) + randomJitter(50, 200);
+                            const currentNetRetries = (networkRetries.get(userId) || 0) + 1;
+                            networkRetries.set(userId, currentNetRetries);
+
+                            if (currentNetRetries <= 2) {
+                                const delay = Math.min(1000 * Math.pow(2, currentNetRetries), 12000) + randomJitter(50, 200);
                                 repository.incrementItemAttempt(job.id, userId, "network_error", delay);
                             } else {
                                 failedCount++;
@@ -502,7 +546,10 @@ class CampaignWorker {
                 });
             }
 
-            if (!isGuildFull && joinedCount < requestedQuota) {
+            if (this._isStopping) {
+                finalStatus = "INTERRUPTED";
+                statusReason = "หยุดการทำงานชั่วคราวเนื่องจากบอทปิดระบบ (Graceful Shutdown) พร้อมกลับมาทำงานต่อเมื่อระบบเริ่มใหม่";
+            } else if (!isGuildFull && joinedCount < requestedQuota) {
                 finalStatus = joinedCount > 0 ? "PARTIAL" : "FAILED";
                 if (joinedCount === 0 && !statusReason) {
                     statusReason = "ไม่สามารถดึงสมาชิกเข้าเซิร์ฟเวอร์ได้ตามเป้าหมาย (ไม่มีสมาชิกที่พร้อมดึงหรือเกิดข้อผิดพลาด)";
@@ -526,12 +573,24 @@ class CampaignWorker {
                 currentThroughput: Number((joinedCount / elapsedSeconds).toFixed(2)),
                 completedAt: Date.now()
             });
+            dispatchSystemicAlert({
+                code: "join_campaign.worker_crash",
+                title: "Join Campaign: การประมวลผลล้มเหลว",
+                description: statusReason,
+                details: {
+                    campaignId: job.id,
+                    joinedCount,
+                    requestedQuota
+                }
+            });
             throw err;
         } finally {
             const completedAt = Date.now();
             const durationMs = completedAt - startTime;
             const elapsedSeconds = Math.max(1, durationMs / 1000);
             const currentThroughput = Number((joinedCount / elapsedSeconds).toFixed(2));
+            const isInterrupted = finalStatus === "INTERRUPTED";
+            const completedTimestamp = isInterrupted ? null : completedAt;
 
             // Release any stale leases
             if (repository.releaseExpiredLeases) {
@@ -550,7 +609,7 @@ class CampaignWorker {
                 currentConcurrency,
                 currentThroughput,
                 candidateCursor,
-                completedAt
+                completedAt: completedTimestamp
             });
 
             // ALWAYS send Final Summary Webhook regardless of success or failure
@@ -612,6 +671,8 @@ class CampaignWorker {
                 statusPrefix = "เกิดข้อผิดพลาด";
             } else if (finalStatus === "PARTIAL") {
                 statusPrefix = "ดึงเข้าสำเร็จบางส่วน";
+            } else if (finalStatus === "INTERRUPTED") {
+                statusPrefix = "หยุดชั่วคราวเพื่อรีสตาร์ต (พร้อมทำต่ออัตโนมัติ)";
             }
 
             const summaryText = `${statusPrefix} **${Number(joinedCount).toLocaleString("th-TH")}** คน` +

@@ -75,7 +75,7 @@ class JoinCampaignRepository {
     findActiveRunningJob() {
         const row = this.db.prepare(`
             SELECT * FROM join_campaign_jobs 
-            WHERE status IN ('RUNNING', 'STAGE') 
+            WHERE status IN ('RUNNING', 'STAGE', 'INTERRUPTED') 
             ORDER BY created_at DESC 
             LIMIT 1
         `).get();
@@ -218,8 +218,10 @@ class JoinCampaignRepository {
         const insertMany = this.db.transaction((records) => {
             let count = 0;
             for (const item of records) {
-                stmt.run(String(campaignId), String(item.userId), String(item.tokenField || "oauth"), now, now);
-                count++;
+                const info = stmt.run(String(campaignId), String(item.userId), String(item.tokenField || "oauth"), now, now);
+                if (info && info.changes > 0) {
+                    count++;
+                }
             }
             return count;
         });
@@ -312,12 +314,16 @@ class JoinCampaignRepository {
         return Number(row?.count) || 0;
     }
 
-    getCompletedUserIds(campaignId) {
+    getTrackedUserIds(campaignId) {
         const rows = this.db.prepare(`
             SELECT user_id FROM join_campaign_items
             WHERE campaign_id = ?
         `).all(String(campaignId));
         return new Set(rows.map(r => r.user_id));
+    }
+
+    getCompletedUserIds(campaignId) {
+        return this.getTrackedUserIds(campaignId);
     }
 
     // --- Panel State Operations ---

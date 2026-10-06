@@ -135,6 +135,7 @@ const statusLabels={
     completed:'เสร็จสิ้นสมบูรณ์',
     partial:'สำเร็จบางส่วน',
     server_full:'เซิร์ฟเวอร์เต็ม (Guild Full)',
+    interrupted:'หยุดชั่วคราว (รอเริ่มต่อ)',
     stopping:'กำลังหยุด',
     stopped:'หยุดแล้ว',
     failed:'เกิดข้อผิดพลาด'
@@ -256,9 +257,6 @@ async function refreshStatus(){
         setFreshness('⚠️ โหลดสถานะไม่ได้ — ข้อมูลด้านล่างอาจเก่า', true);
     }
 }
-
-// Marker placeholder preserved for testing suite compatibility
-async function dryRun() {}
 
 refreshStatus();
 dashboardInterval(refreshStatus, 3000);

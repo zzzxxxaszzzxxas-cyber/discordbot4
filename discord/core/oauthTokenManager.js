@@ -859,7 +859,10 @@ async function listAccessTokenCandidates({
 
     const config = getOAuthRefreshConfig(env);
     const tokenBranches = TOKEN_FIELDS.map(tokenField => ({
-        [`${tokenField}.encryptedRefreshToken`]: { $exists: true, $ne: "" },
+        $or: [
+            { [`${tokenField}.encryptedRefreshToken`]: { $exists: true, $ne: "" } },
+            { [`${tokenField}.encryptedAccessToken`]: { $exists: true, $ne: "" } }
+        ],
         [`${tokenField}.revokedAt`]: { $in: [null] },
         $or: [
             { [`${tokenField}.refreshFailCount`]: { $exists: false } },
@@ -925,9 +928,12 @@ async function listAccessTokenCandidates({
             continue;
         }
 
-        const isNewUser = seenUsers ? !seenUsers.has(userId) : !batchUsers.has(userId);
+        if (seenUsers instanceof Set && seenUsers.has(userId)) {
+            continue;
+        }
+
+        const isNewUser = !batchUsers.has(userId);
         if (isNewUser) {
-            if (seenUsers) seenUsers.add(userId);
             batchUsers.add(userId);
             newUniqueUsers++;
         }
@@ -940,12 +946,13 @@ async function listAccessTokenCandidates({
 
         for (const tokenField of TOKEN_FIELDS) {
             const tokenState = doc[tokenField] || {};
-            if (!tokenState.encryptedRefreshToken) continue;
+            const hasToken = Boolean(tokenState.encryptedRefreshToken || tokenState.encryptedAccessToken);
+            if (!hasToken) continue;
             if (tokenState.revokedAt) {
                 docIsRevoked = true;
                 continue;
             }
-            if (Number(tokenState.refreshFailCount || 0) >= config.failMax) {
+            if (Number(tokenState.refreshFailCount || 0) >= config.failMax && !tokenState.encryptedAccessToken) {
                 docIsExhausted = true;
                 continue;
             }
