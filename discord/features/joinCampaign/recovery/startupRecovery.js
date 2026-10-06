@@ -6,6 +6,27 @@ const { getJoinCampaignConfig } = require("../config");
 
 const MAX_RECOVERY_ATTEMPTS = 5;
 
+function dispatchRecoveryAlert({ code, title, description, details = {} }) {
+    try {
+        const { sendWebhookEvent } = require("../../../core/webhooks");
+        if (typeof sendWebhookEvent === "function") {
+            sendWebhookEvent({
+                category: "SYSTEM",
+                severity: "CRITICAL",
+                actionRequired: true,
+                code: code || "join_campaign.recovery_failed",
+                title: title || "Join Campaign: การกู้คืนล้มเหลว",
+                description: description || "เกิดข้อผิดพลาดในการกู้คืนงานเดิม",
+                fields: Object.entries(details).map(([name, value]) => ({
+                    name,
+                    value: String(value),
+                    inline: true
+                }))
+            });
+        }
+    } catch (_) {}
+}
+
 async function runStartupRecovery({ client, repository, tokenManager, discord }) {
     const config = getJoinCampaignConfig();
     if (!config.enabled) {
@@ -31,19 +52,16 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
                 lastError: failReason,
                 completedAt: Date.now()
             });
-            try {
-                const { sendWebhookEvent } = require("../../../core/webhooks");
-                if (typeof sendWebhookEvent === "function") {
-                    sendWebhookEvent({
-                        category: "SYSTEM",
-                        severity: "CRITICAL",
-                        actionRequired: true,
-                        code: "join_campaign.max_recovery_exceeded",
-                        title: "Join Campaign: การกู้คืนล้มเหลวเกินกำหนด",
-                        description: `งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้งและถูกยกเลิก`
-                    });
+            dispatchRecoveryAlert({
+                code: "join_campaign.max_recovery_exceeded",
+                title: "Join Campaign: การกู้คืนล้มเหลวเกินกำหนด",
+                description: `งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้งและถูกยกเลิก`,
+                details: {
+                    campaignId: interruptedJob.id,
+                    targetGuildId: interruptedJob.targetGuildId,
+                    recoveryAttempts: currentRecoveryCount
                 }
-            } catch (_) {}
+            });
             return { recovered: false, reason: "max_recovery_exceeded" };
         }
 
@@ -78,6 +96,15 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
                     lastError: failMsg,
                     completedAt: Date.now()
                 });
+                dispatchRecoveryAlert({
+                    code: "join_campaign.recovery_target_missing",
+                    title: "Join Campaign: เซิร์ฟเวอร์เป้าหมายไม่พร้อมใช้งานขณะกู้คืน",
+                    description: failMsg,
+                    details: {
+                        campaignId: interruptedJob.id,
+                        targetGuildId: interruptedJob.targetGuildId
+                    }
+                });
                 return { recovered: false, error: failMsg, jobId: interruptedJob.id };
             }
             try {
@@ -89,6 +116,15 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
                     status: "FAILED",
                     lastError: failMsg,
                     completedAt: Date.now()
+                });
+                dispatchRecoveryAlert({
+                    code: "join_campaign.recovery_member_fetch_failed",
+                    title: "Join Campaign: ตรวจสอบรายชื่อสมาชิกล้มเหลวขณะกู้คืน",
+                    description: failMsg,
+                    details: {
+                        campaignId: interruptedJob.id,
+                        targetGuildId: interruptedJob.targetGuildId
+                    }
                 });
                 return { recovered: false, error: failMsg, jobId: interruptedJob.id };
             }
@@ -116,12 +152,26 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
                 lastError: `กู้คืนงานเดิมไม่สำเร็จ: ${err.message}`,
                 completedAt: Date.now()
             });
+            dispatchRecoveryAlert({
+                code: "join_campaign.recovery_worker_start_failed",
+                title: "Join Campaign: ไม่สามารถเริ่ม Worker กู้คืนได้",
+                description: err.message,
+                details: {
+                    campaignId: interruptedJob.id,
+                    targetGuildId: interruptedJob.targetGuildId
+                }
+            });
             return { recovered: false, error: err.message, jobId: interruptedJob.id };
         }
 
         return { recovered: true, jobId: interruptedJob.id, workerPromise };
     } catch (err) {
         console.error(`[JoinCampaign] ❌ เกิดข้อผิดพลาดในการตรวจสอบงานค้าง:`, err.message);
+        dispatchRecoveryAlert({
+            code: "join_campaign.recovery_error",
+            title: "Join Campaign: เกิดข้อผิดพลาดร้ายแรงขณะกู้คืน",
+            description: err.message
+        });
         return { recovered: false, error: err.message };
     }
 }

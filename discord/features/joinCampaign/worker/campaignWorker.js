@@ -44,6 +44,7 @@ class CampaignWorker {
         this._activeWorkerPromise = null;
         this._currentJobId = null;
         this._isStopping = false;
+        this._wakeUpResolvers = new Set();
     }
 
     get isRunning() {
@@ -56,6 +57,24 @@ class CampaignWorker {
 
     stopCurrentWorker() {
         this._isStopping = true;
+        for (const wakeUp of this._wakeUpResolvers) {
+            try { wakeUp(); } catch (_) {}
+        }
+        this._wakeUpResolvers.clear();
+    }
+
+    _interruptibleSleep(ms) {
+        if (this._isStopping || ms <= 0) return Promise.resolve();
+        return new Promise((resolve) => {
+            let timer = null;
+            const wakeUp = () => {
+                if (timer) clearTimeout(timer);
+                this._wakeUpResolvers.delete(wakeUp);
+                resolve();
+            };
+            timer = setTimeout(wakeUp, ms);
+            this._wakeUpResolvers.add(wakeUp);
+        });
     }
 
     async waitForCompletion() {
@@ -83,6 +102,7 @@ class CampaignWorker {
 
         this._currentJobId = job.id;
         this._isStopping = false;
+        this._wakeUpResolvers.clear();
 
         this._activeWorkerPromise = this._executeLoop({
             job,
@@ -231,7 +251,7 @@ class CampaignWorker {
                 targetGuildId: job.targetGuildId
             },
             tokenManager,
-            batchSize: 200,
+            batchSize: Math.max(50, Number(config.batchSize || 200)),
             startCursor: candidateCursor,
             seenUsers
         });
@@ -291,7 +311,7 @@ class CampaignWorker {
                 // Check rate-limit backoff
                 const now = Date.now();
                 if (now < backoffUntil) {
-                    await sleep(backoffUntil - now);
+                    await this._interruptibleSleep(backoffUntil - now);
                     continue;
                 }
 
@@ -319,7 +339,7 @@ class CampaignWorker {
                         }
                         break;
                     }
-                    await sleep(200);
+                    await this._interruptibleSleep(200);
                     continue;
                 }
 
@@ -549,13 +569,20 @@ class CampaignWorker {
             if (this._isStopping) {
                 finalStatus = "INTERRUPTED";
                 statusReason = "หยุดการทำงานชั่วคราวเนื่องจากบอทปิดระบบ (Graceful Shutdown) พร้อมกลับมาทำงานต่อเมื่อระบบเริ่มใหม่";
-            } else if (!isGuildFull && joinedCount < requestedQuota) {
-                finalStatus = joinedCount > 0 ? "PARTIAL" : "FAILED";
-                if (joinedCount === 0 && !statusReason) {
+            } else if (joinedCount >= requestedQuota && requestedQuota > 0) {
+                finalStatus = "COMPLETED";
+                statusReason = null;
+            } else if (isGuildFull) {
+                finalStatus = "SERVER_FULL";
+                statusReason = "เซิร์ฟเวอร์ปลายทางมีสมาชิกเต็มแล้ว";
+            } else if (joinedCount > 0) {
+                finalStatus = "PARTIAL";
+                statusReason = "สมาชิกที่พร้อมดึงในระบบหมดแล้วก่อนถึงเป้าหมาย";
+            } else {
+                finalStatus = "FAILED";
+                if (!statusReason) {
                     statusReason = "ไม่สามารถดึงสมาชิกเข้าเซิร์ฟเวอร์ได้ตามเป้าหมาย (ไม่มีสมาชิกที่พร้อมดึงหรือเกิดข้อผิดพลาด)";
                 }
-            } else if (!isGuildFull) {
-                finalStatus = "COMPLETED";
             }
 
         } catch (err) {

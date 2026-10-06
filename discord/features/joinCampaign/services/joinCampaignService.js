@@ -29,7 +29,8 @@ class JoinCampaignService {
         requestedAmount = null,
         webhookUrl = null,
         startedByUserId = null,
-        channelId = null
+        channelId = null,
+        tokenManager = null
     }) {
         const config = getJoinCampaignConfig();
         if (!config.enabled) {
@@ -51,7 +52,8 @@ class JoinCampaignService {
             mode,
             baseConfig,
             webhookUrl,
-            requestedAmount
+            requestedAmount,
+            tokenManager
         });
 
         if (!preflight.ok) {
@@ -96,7 +98,7 @@ class JoinCampaignService {
         };
     }
 
-    async confirmAndStartCampaign({ stageId, client, repository }) {
+    async confirmAndStartCampaign({ stageId, client, repository, tokenManager = oauthTokenManager, discord = null }) {
         const config = getJoinCampaignConfig();
         if (!config.enabled) {
             return {
@@ -126,27 +128,36 @@ class JoinCampaignService {
         const mode = getMode(session.modeId);
         const { preflight } = session;
 
-        // Refresh live target membership right before start to ensure fresh snapshot
-        let freshTargetMemberIds = preflight.targetMemberIds;
-        let freshReadyCount = preflight.readyCount;
+        // Refresh live target membership right before start to ensure fresh snapshot (Fail-Closed)
+        let freshTargetMemberIds;
+        let freshReadyCount;
         try {
             let targetGuild = client.guilds?.cache?.get(preflight.targetGuildId);
             if (!targetGuild && client.guilds?.fetch) {
                 targetGuild = await client.guilds.fetch(preflight.targetGuildId).catch(() => null);
             }
-            if (targetGuild) {
-                freshTargetMemberIds = await getLiveTargetMemberIds(targetGuild);
-                freshReadyCount = await countEligibleCandidates({
-                    mode,
-                    baseConfig: {
-                        sourceGuildId: preflight.sourceGuildId,
-                        targetGuildId: preflight.targetGuildId
-                    },
-                    tokenManager: oauthTokenManager,
-                    targetMemberIds: freshTargetMemberIds
-                });
+            if (!targetGuild) {
+                return {
+                    ok: false,
+                    error: "ไม่พบเซิร์ฟเวอร์ปลายทาง หรือบอทไม่ได้อยู่ในเซิร์ฟเวอร์เป้าหมายแล้ว กรุณาเชิญบอทเข้าเซิร์ฟเวอร์ก่อนนะครับ"
+                };
             }
-        } catch (_) {}
+            freshTargetMemberIds = await getLiveTargetMemberIds(targetGuild);
+            freshReadyCount = await countEligibleCandidates({
+                mode,
+                baseConfig: {
+                    sourceGuildId: preflight.sourceGuildId,
+                    targetGuildId: preflight.targetGuildId
+                },
+                tokenManager: tokenManager || oauthTokenManager,
+                targetMemberIds: freshTargetMemberIds
+            });
+        } catch (err) {
+            return {
+                ok: false,
+                error: `ไม่สามารถตรวจสอบรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้: ${err.message || "เกิดข้อผิดพลาดในการเชื่อมต่อ"}`
+            };
+        }
 
         // Persist initial job in SQLite (Notice: webhookUrl is NOT stored in SQLite)
         let job;
@@ -216,7 +227,9 @@ class JoinCampaignService {
                     targetMemberIds: freshTargetMemberIds
                 },
                 client,
-                repository
+                repository,
+                ...(tokenManager ? { tokenManager } : {}),
+                ...(discord ? { discord } : {})
             });
 
             if (startResult?.workerPromise) {
@@ -312,7 +325,9 @@ class JoinCampaignService {
                 created_at: job.createdAt,
                 started_at: job.createdAt,
                 completedAt: job.completedAt,
-                completed_at: job.completedAt
+                completed_at: job.completedAt,
+                durationMs: job.completedAt && job.createdAt ? Math.max(0, job.completedAt - job.createdAt) : (job.createdAt ? Math.max(0, Date.now() - job.createdAt) : 0),
+                duration_ms: job.completedAt && job.createdAt ? Math.max(0, job.completedAt - job.createdAt) : (job.createdAt ? Math.max(0, Date.now() - job.createdAt) : 0)
             };
         };
 
@@ -364,7 +379,9 @@ class JoinCampaignService {
             created_at: job.createdAt,
             started_at: job.createdAt,
             completedAt: job.completedAt,
-            completed_at: job.completedAt
+            completed_at: job.completedAt,
+            durationMs: job.completedAt && job.createdAt ? Math.max(0, job.completedAt - job.createdAt) : (job.createdAt ? Math.max(0, Date.now() - job.createdAt) : 0),
+            duration_ms: job.completedAt && job.createdAt ? Math.max(0, job.completedAt - job.createdAt) : (job.createdAt ? Math.max(0, Date.now() - job.createdAt) : 0)
         }));
     }
 

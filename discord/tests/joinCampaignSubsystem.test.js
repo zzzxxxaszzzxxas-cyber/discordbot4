@@ -1324,3 +1324,268 @@ test("P2 audit: createItems returns exact inserted count and getTrackedUserIds w
     assert.deepEqual(Array.from(tracked).sort(), ["u1", "u2", "u3"].sort());
     assert.deepEqual(Array.from(completed).sort(), ["u1", "u2", "u3"].sort());
 });
+
+test("P1 audit: confirmAndStartCampaign fails closed and creates no job when fresh target member fetch throws", async () => {
+    const repo = database.repositories.joinCampaign;
+    const mode = modeRegistry.getMode("ALL_TO_TARGET");
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    members: {
+                        me: { permissions: { has: () => true } },
+                        // fetch throws error simulating Discord API network failure
+                        fetch: async () => {
+                            const err = new Error("Discord API 503 Service Unavailable");
+                            err.code = "FETCH_MEMBERS_FAILED";
+                            throw err;
+                        }
+                    }
+                }]
+            ])
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({
+            candidates: [{ userId: "u1", tokenField: "oauth" }],
+            hasMore: false
+        }),
+        getAccessToken: async () => ({ accessToken: "valid_token" })
+    };
+
+    // Stage session with preflight
+    const stageResult = await joinCampaignService.stageCampaign({
+        client: {
+            guilds: {
+                cache: new Map([
+                    ["123456789012345678", {
+                        id: "123456789012345678",
+                        name: "Target Server",
+                        memberCount: 1,
+                        members: {
+                            me: { permissions: { has: () => true } },
+                            fetch: async () => new Map()
+                        }
+                    }]
+                ])
+            }
+        },
+        repository: repo,
+        mode,
+        baseConfig: { targetGuildId: "123456789012345678" },
+        requestedAmount: "10",
+        tokenManager: mockTokenManager
+    });
+
+    assert.ok(stageResult.ok);
+    const stageId = stageResult.stageId;
+
+    // Confirm execution when client fresh member fetch fails
+    const confirmResult = await joinCampaignService.confirmAndStartCampaign({
+        stageId,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager
+    });
+
+    // Must fail closed with error
+    assert.equal(confirmResult.ok, false);
+    assert.ok(confirmResult.error.includes("ไม่สามารถตรวจสอบรายชื่อสมาชิกปัจจุบัน"));
+
+    // No active or running job must be created in SQLite
+    const active = repo.findActiveRunningJob();
+    assert.equal(active, null);
+});
+
+test("P1 audit: worker interrupted sleep wakes immediately during long 429 backoff when stopCurrentWorker is called", async () => {
+    const repo = database.repositories.joinCampaign;
+    const jobId = "camp_test_sleep_wake_" + Date.now();
+
+    repo.createJob({
+        id: jobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "STAGE",
+        requestedAmount: 10
+    });
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    memberCount: 1,
+                    members: { fetch: async () => new Map() }
+                }]
+            ])
+        }
+    };
+
+    const tokenManager = {
+        listAccessTokenCandidates: async () => ({
+            candidates: [{ userId: "user_429", tokenField: "oauth" }],
+            hasMore: false
+        }),
+        getAccessToken: async () => ({ accessToken: "valid_token" })
+    };
+
+    const mockDiscord = {
+        addMemberToGuild: async () => {
+            // Simulate 429 with 300-second retryAfter
+            return { status: 429, retryAfter: 300000 };
+        }
+    };
+
+    const workerResult = await campaignWorker.startWorker({
+        job: {
+            id: jobId,
+            mode: "ALL_TO_TARGET",
+            targetGuildId: "123456789012345678",
+            requestedAmount: 10,
+            currentConcurrency: 1
+        },
+        client: mockClient,
+        repository: repo,
+        tokenManager,
+        discord: mockDiscord,
+        config: { enabled: true, maxConcurrency: 1, maxRateLimitRetries: 3 }
+    });
+
+    // Wait a brief tick for the 429 to register and worker to enter backoff sleep
+    await new Promise(r => setTimeout(r, 60));
+
+    const startTime = Date.now();
+    // Signal graceful shutdown while worker is sleeping in 300-second backoff
+    campaignWorker.stopCurrentWorker();
+
+    await workerResult.workerPromise;
+    const elapsed = Date.now() - startTime;
+
+    // Worker must wake up and resolve promptly (well within 1000ms, not 300,000ms!)
+    assert.ok(elapsed < 1000, `Worker took ${elapsed}ms to exit, expected < 1000ms`);
+
+    const job = repo.findJobById(jobId);
+    assert.equal(job.status, "INTERRUPTED");
+    assert.equal(job.completedAt, null);
+});
+
+test("P1 audit: quota met takes precedence over guild full error (status COMPLETED)", async () => {
+    const repo = database.repositories.joinCampaign;
+    const jobId = "camp_test_quota_precedence_" + Date.now();
+
+    repo.createJob({
+        id: jobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "STAGE",
+        requestedAmount: 2
+    });
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    memberCount: 1,
+                    members: { fetch: async () => new Map() }
+                }]
+            ])
+        }
+    };
+
+    const tokenManager = {
+        listAccessTokenCandidates: async () => ({
+            candidates: [
+                { userId: "u1", tokenField: "oauth" },
+                { userId: "u2", tokenField: "oauth" },
+                { userId: "u3", tokenField: "oauth" }
+            ],
+            hasMore: false
+        }),
+        getAccessToken: async () => ({ accessToken: "valid_token" })
+    };
+
+    const mockDiscord = {
+        addMemberToGuild: async (targetGuildId, userId) => {
+            if (userId === "u3") {
+                // Returns 30005 (guild full) concurrently
+                return { status: 400, code: 30005, error: { code: 30005, message: "Maximum number of guild members reached" } };
+            }
+            // u1 and u2 succeed, fulfilling requestedAmount = 2
+            return { status: 201 };
+        }
+    };
+
+    const workerResult = await campaignWorker.startWorker({
+        job: {
+            id: jobId,
+            mode: "ALL_TO_TARGET",
+            targetGuildId: "123456789012345678",
+            requestedAmount: 2,
+            currentConcurrency: 4
+        },
+        client: mockClient,
+        repository: repo,
+        tokenManager,
+        discord: mockDiscord,
+        config: { enabled: true, maxConcurrency: 4, maxRateLimitRetries: 1 }
+    });
+
+    await workerResult.workerPromise;
+
+    const job = repo.findJobById(jobId);
+    assert.equal(job.joinedCount, 2);
+    // When joinedCount meets requestedQuota, status MUST be COMPLETED even if a concurrent task encountered code 30005
+    assert.equal(job.status, "COMPLETED");
+});
+
+test("P2 audit: candidate query skips tokens with refreshFailCount >= failMax matching getAccessToken contract", async () => {
+    const mockModel = {
+        find: () => ({
+            select: () => ({
+                sort: () => ({
+                    limit: () => ({
+                        lean: async () => [
+                            {
+                                _id: "doc1",
+                                discord: { userId: "user_exhausted" },
+                                oauth: {
+                                    encryptedAccessToken: "enc_acc",
+                                    encryptedRefreshToken: "enc_ref",
+                                    refreshFailCount: 5,
+                                    scope: "guilds.join"
+                                }
+                            },
+                            {
+                                _id: "doc2",
+                                discord: { userId: "user_valid" },
+                                oauth: {
+                                    encryptedAccessToken: "enc_acc_2",
+                                    encryptedRefreshToken: "enc_ref_2",
+                                    refreshFailCount: 0,
+                                    scope: "guilds.join"
+                                }
+                            }
+                        ]
+                    })
+                })
+            })
+        })
+    };
+
+    const oauthTokenManager = require("../core/oauthTokenManager");
+    const result = await oauthTokenManager.listAccessTokenCandidates({
+        allowAllGuilds: true,
+        model: mockModel,
+        env: { OAUTH_TOKEN_REFRESH_FAIL_MAX: "3" }
+    });
+
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].userId, "user_valid");
+});

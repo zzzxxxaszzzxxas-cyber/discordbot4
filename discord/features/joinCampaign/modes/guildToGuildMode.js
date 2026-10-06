@@ -28,14 +28,14 @@ class GuildToGuildMode {
             {
                 id: "source_guild_id",
                 label: "ไอดีเซิร์ฟเวอร์ต้นทาง",
-                placeholder: "ใส่ไอดีเซิร์ฟเวอร์ต้นทาง (ตัวเลข 17–20 หลัก)",
+                placeholder: "ใส่ไอดีเซิร์ฟเวอร์ต้นทาง (ตัวเลข 17–22 หลัก)",
                 required: true,
                 value: current.sourceGuildId || ""
             },
             {
                 id: "target_guild_id",
                 label: "ไอดีเซิร์ฟเวอร์ปลายทาง",
-                placeholder: "ใส่ไอดีเซิร์ฟเวอร์ปลายทาง (ตัวเลข 17–20 หลัก)",
+                placeholder: "ใส่ไอดีเซิร์ฟเวอร์ปลายทาง (ตัวเลข 17–22 หลัก)",
                 required: true,
                 value: current.targetGuildId || ""
             }

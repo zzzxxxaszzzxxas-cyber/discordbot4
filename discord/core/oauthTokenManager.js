@@ -952,7 +952,7 @@ async function listAccessTokenCandidates({
                 docIsRevoked = true;
                 continue;
             }
-            if (Number(tokenState.refreshFailCount || 0) >= config.failMax && !tokenState.encryptedAccessToken) {
+            if (Number(tokenState.refreshFailCount || 0) >= config.failMax) {
                 docIsExhausted = true;
                 continue;
             }
@@ -985,8 +985,8 @@ async function listAccessTokenCandidates({
                 scope: chosenScope,
                 recordId: doc._id,
                 lastVerify: {
-                    guildId: doc.lastVerify.guildId,
-                    result: doc.lastVerify.result
+                    guildId: doc.lastVerify?.guildId || null,
+                    result: doc.lastVerify?.result || null
                 }
             });
         } else if (docHasMissingScope) {

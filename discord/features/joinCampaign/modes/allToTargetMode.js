@@ -28,7 +28,7 @@ class AllToTargetMode {
             {
                 id: "target_guild_id",
                 label: "ไอดีเซิร์ฟเวอร์ปลายทาง",
-                placeholder: "ใส่ไอดีเซิร์ฟเวอร์ปลายทาง (ตัวเลข 17–20 หลัก)",
+                placeholder: "ใส่ไอดีเซิร์ฟเวอร์ปลายทาง (ตัวเลข 17–22 หลัก)",
                 required: true,
                 value: current.targetGuildId || ""
             }
