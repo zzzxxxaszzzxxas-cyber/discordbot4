@@ -8,7 +8,8 @@ async function* streamCandidates({
     tokenManager = oauthTokenManager,
     batchSize = 500,
     startCursor = null,
-    seenUsers = null
+    seenUsers = null,
+    onPage = null
 }) {
     let afterId = startCursor || null;
     let hasMore = true;
@@ -29,14 +30,18 @@ async function* streamCandidates({
             seenUsers: tracker
         });
 
-        const candidates = Array.isArray(page) ? page : (page?.candidates || []);
+        if (typeof onPage === "function") {
+            try { onPage(page); } catch (_) {}
+        }
+
+        const candidates = page?.candidates !== undefined ? page.candidates : (Array.isArray(page) ? page : []);
 
         for (const candidate of candidates) {
             const cursor = candidate._id || candidate.recordId ? String(candidate._id || candidate.recordId) : null;
             yield { candidate, cursor };
         }
 
-        const nextCursor = page.nextCursor || (candidates.length > 0 && candidates[candidates.length - 1]?._id ? String(candidates[candidates.length - 1]._id) : null);
+        const nextCursor = page?.nextCursor ?? (candidates.length > 0 && (candidates[candidates.length - 1]?._id || candidates[candidates.length - 1]?.recordId) ? String(candidates[candidates.length - 1]._id || candidates[candidates.length - 1].recordId) : null);
 
         // Break if cursor did not advance or no next cursor
         if (!nextCursor || nextCursor === afterId) {

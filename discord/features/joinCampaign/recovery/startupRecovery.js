@@ -21,7 +21,8 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
             console.warn(`[JoinCampaign] ⚠️ งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด (${MAX_RECOVERY_ATTEMPTS} ครั้ง) ยกเลิกการกู้คืนเพื่อความปลอดภัย`);
             repository.updateJob(interruptedJob.id, {
                 status: "FAILED",
-                last_error: `กู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้ง`
+                lastError: `กู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้ง`,
+                completedAt: Date.now()
             });
             return { recovered: false, reason: "max_recovery_exceeded" };
         }
@@ -42,19 +43,34 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
         interruptedJob.recoveryCount = nextRecoveryCount;
         interruptedJob.recovery_count = nextRecoveryCount;
 
-        // 3. Fetch current target guild members to avoid redundant joins
+        // 3. Fetch current target guild members to avoid redundant joins (Fail-closed)
         let targetMemberIds = null;
         if (client && interruptedJob.targetGuildId) {
+            let targetGuild = client.guilds.cache.get(interruptedJob.targetGuildId);
+            if (!targetGuild && client.guilds?.fetch) {
+                targetGuild = await client.guilds.fetch(interruptedJob.targetGuildId).catch(() => null);
+            }
+            if (!targetGuild) {
+                const failMsg = "ไม่พบเซิร์ฟเวอร์ปลายทาง หรือบอทไม่ได้อยู่ในเซิร์ฟเวอร์เป้าหมายแล้ว (Fail-Closed)";
+                console.error(`[JoinCampaign] ❌ ${failMsg}`);
+                repository.updateJob(interruptedJob.id, {
+                    status: "FAILED",
+                    lastError: failMsg,
+                    completedAt: Date.now()
+                });
+                return { recovered: false, error: failMsg, jobId: interruptedJob.id };
+            }
             try {
-                let targetGuild = client.guilds.cache.get(interruptedJob.targetGuildId);
-                if (!targetGuild && client.guilds?.fetch) {
-                    targetGuild = await client.guilds.fetch(interruptedJob.targetGuildId).catch(() => null);
-                }
-                if (targetGuild) {
-                    targetMemberIds = await getLiveTargetMemberIds(targetGuild);
-                }
+                targetMemberIds = await getLiveTargetMemberIds(targetGuild);
             } catch (err) {
-                console.warn(`[JoinCampaign] ⚠️ ไม่สามารถดึงรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางระหว่างกู้คืนได้:`, err.message);
+                const failMsg = `ไม่สามารถดึงรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้: ${err.message}`;
+                console.error(`[JoinCampaign] ❌ ${failMsg}`);
+                repository.updateJob(interruptedJob.id, {
+                    status: "FAILED",
+                    lastError: failMsg,
+                    completedAt: Date.now()
+                });
+                return { recovered: false, error: failMsg, jobId: interruptedJob.id };
             }
         }
 
@@ -70,8 +86,17 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
                 ...(discord ? { discord } : {})
             });
             workerPromise = startResult?.workerPromise || null;
+            if (!workerPromise) {
+                throw new Error("Worker promise was null or undefined");
+            }
         } catch (err) {
             console.error(`[JoinCampaign] ❌ ไม่สามารถกู้คืนงานเดิมได้:`, err.message);
+            repository.updateJob(interruptedJob.id, {
+                status: "FAILED",
+                lastError: `กู้คืนงานเดิมไม่สำเร็จ: ${err.message}`,
+                completedAt: Date.now()
+            });
+            return { recovered: false, error: err.message, jobId: interruptedJob.id };
         }
 
         return { recovered: true, jobId: interruptedJob.id, workerPromise };

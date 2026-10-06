@@ -42,6 +42,10 @@ class GuildToGuildMode {
         ];
     }
 
+    getBaseSetupFields(current = {}) {
+        return this.getBaseModalFields(current);
+    }
+
     buildMongoFilter(baseConfig = {}) {
         const sourceGuildId = String(baseConfig.sourceGuildId || "").trim();
         return {
@@ -49,6 +53,10 @@ class GuildToGuildMode {
             "lastVerify.result": "success",
             isDeleted: { $ne: true }
         };
+    }
+
+    resolveCandidateFilter(baseConfig = {}) {
+        return this.buildMongoFilter(baseConfig);
     }
 
     formatPanelFields({ panelState, readyCount, liveJob, sourceGuildName, targetGuildName }) {

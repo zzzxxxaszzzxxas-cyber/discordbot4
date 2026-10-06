@@ -106,7 +106,7 @@ function sanitizeUserFacingError(reason) {
     if (lower.includes("fail-closed") || lower.includes("ตรวจสอบรายชื่อสมาชิก")) {
         return "ไม่สามารถตรวจสอบรายชื่อสมาชิกในเซิร์ฟเวอร์เป้าหมายได้ครบถ้วน (ระบบหยุดเพื่อความปลอดภัย)";
     }
-    if (lower.includes("guild_full") || lower.includes("สมาชิกเต็ม")) {
+    if (lower.includes("guild_full") || lower.includes("สมาชิกเต็ม") || lower.includes("30005") || lower.includes("maximum number of guilds")) {
         return "เซิร์ฟเวอร์ปลายทางมีสมาชิกถึงจำนวนสูงสุดแล้ว";
     }
     if (lower.includes("active_campaign_exists") || lower.includes("มีงานดึงสมาชิกกำลังทำงาน")) {
@@ -116,7 +116,7 @@ function sanitizeUserFacingError(reason) {
         return "โทเค็นสำหรับดึงสมาชิกไม่พร้อมใช้งานหรือหมดอายุ";
     }
     // If reason looks like a technical error / stack trace:
-    if (reason.includes("Error:") || reason.includes("at ") || reason.includes("SQLITE_") || reason.includes("ENOENT")) {
+    if (lower.includes("error") || reason.includes("at ") || reason.includes("SQLITE_") || reason.includes("ENOENT")) {
         return "ระบบขัดข้องชั่วคราว ไม่สามารถดำเนินการต่อได้";
     }
     return reason;

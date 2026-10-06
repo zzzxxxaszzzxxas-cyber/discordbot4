@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { getJoinCampaignConfig } = require("../config");
 const { runPreflight } = require("./preflightService");
 const { buildPreflightConfirmationPayload } = require("../ui/confirmationBuilder");
 const campaignWorker = require("../worker/campaignWorker");
@@ -28,6 +29,14 @@ class JoinCampaignService {
         startedByUserId = null,
         channelId = null
     }) {
+        const config = getJoinCampaignConfig();
+        if (!config.enabled) {
+            return {
+                ok: false,
+                error: "ระบบดึงสมาชิกถูกปิดใช้งานอยู่ในขณะนี้ครับ (JOIN_CAMPAIGN_ENABLED=false)"
+            };
+        }
+
         if (this.isRunning) {
             return {
                 ok: false,
@@ -86,6 +95,14 @@ class JoinCampaignService {
     }
 
     async confirmAndStartCampaign({ stageId, client, repository }) {
+        const config = getJoinCampaignConfig();
+        if (!config.enabled) {
+            return {
+                ok: false,
+                error: "ระบบดึงสมาชิกถูกปิดใช้งานอยู่ในขณะนี้ครับ (JOIN_CAMPAIGN_ENABLED=false)"
+            };
+        }
+
         const session = stagedSessions.get(stageId);
         if (!session) {
             return {
@@ -166,19 +183,48 @@ class JoinCampaignService {
         } catch (_) {}
 
         // Start bounded adaptive worker pool in background
-        campaignWorker.startWorker({
-            job: {
-                ...job,
-                startedByChannelId: session.channelId,
-                webhookUrl: session.webhookUrl,
-                targetMemberIds: preflight.targetMemberIds
-            },
-            client,
-            repository
-        }).finally(() => {
+        try {
+            const startResult = await campaignWorker.startWorker({
+                job: {
+                    ...job,
+                    startedByChannelId: session.channelId,
+                    webhookUrl: session.webhookUrl,
+                    targetMemberIds: preflight.targetMemberIds
+                },
+                client,
+                repository
+            });
+
+            if (startResult?.workerPromise) {
+                startResult.workerPromise.catch((loopErr) => {
+                    const errorMsg = loopErr?.message || "Worker loop terminated unexpectedly";
+                    try {
+                        repository.updateJob(jobId, {
+                            status: "FAILED",
+                            lastError: errorMsg,
+                            completedAt: Date.now()
+                        });
+                    } catch (_) {}
+                }).finally(() => {
+                    this._activeWebhooks.delete(jobId);
+                    this._activeTargetMemberSets.delete(jobId);
+                });
+            }
+        } catch (err) {
             this._activeWebhooks.delete(jobId);
             this._activeTargetMemberSets.delete(jobId);
-        }).catch(() => {});
+            try {
+                repository.updateJob(jobId, {
+                    status: "FAILED",
+                    lastError: err?.message || "ไม่สามารถเริ่มต้น Worker ได้",
+                    completedAt: Date.now()
+                });
+            } catch (_) {}
+            return {
+                ok: false,
+                error: `ไม่สามารถเริ่มงานได้: ${err?.message || "เกิดข้อผิดพลาดในการเริ่มต้นระบบทำงาน"}`
+            };
+        }
 
         return {
             ok: true,

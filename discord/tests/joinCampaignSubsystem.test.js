@@ -8,9 +8,10 @@ const { buildBaseSetupModal, buildStartOptionsModal, CUSTOM_IDS } = require("../
 const { buildPanelPayload, IDS: PANEL_IDS } = require("../features/joinCampaign/ui/panelBuilder");
 const { buildPreflightConfirmationPayload, IDS: CONFIRM_IDS } = require("../features/joinCampaign/ui/confirmationBuilder");
 const joinCampaignService = require("../features/joinCampaign/services/joinCampaignService");
-const { isJoinCampaignInteraction } = require("../features/joinCampaign/handlers/interactionRouter");
+const { isJoinCampaignInteraction, handleJoinCampaignInteraction } = require("../features/joinCampaign/handlers/interactionRouter");
+const { handleJoinPanelCommand } = require("../features/joinCampaign/handlers/commandHandler");
 const { isValidDiscordWebhookUrl, sanitizeUserFacingError } = require("../features/joinCampaign/worker/batchLogger");
-const { runPreflight } = require("../features/joinCampaign/services/preflightService");
+const { runPreflight, validateGuildTargets } = require("../features/joinCampaign/services/preflightService");
 const { streamCandidates } = require("../features/joinCampaign/services/candidateQueryService");
 const campaignWorker = require("../features/joinCampaign/worker/campaignWorker");
 const { runStartupRecovery } = require("../features/joinCampaign/recovery/startupRecovery");
@@ -805,4 +806,316 @@ test("Join Campaign: discordApi.addMemberToGuild accepts callerManagedRetry opti
     assert.equal(resMissing.ok, false);
     assert.equal(resMissing.status, 400);
     assert.equal(resMissing.error, "Missing guildId/userId/accessToken");
+});
+
+test("Join Campaign: Master switch JOIN_CAMPAIGN_ENABLED=false blocks command, interaction, and service layers", async () => {
+    const prevEnabled = process.env.JOIN_CAMPAIGN_ENABLED;
+    const prevOwner = process.env.OWNER_ID;
+    process.env.JOIN_CAMPAIGN_ENABLED = "false";
+    process.env.OWNER_ID = "test-owner";
+
+    try {
+        let commandReply = null;
+        const mockCommandInteraction = {
+            guild: { id: "guild-1" },
+            user: { id: "test-owner" },
+            reply: async (payload) => { commandReply = payload; }
+        };
+        await handleJoinPanelCommand(mockCommandInteraction, {});
+        assert.ok(commandReply?.content?.includes("JOIN_CAMPAIGN_ENABLED=false"));
+
+        let interactionReply = null;
+        const mockButtonInteraction = {
+            customId: PANEL_IDS.BTN_START,
+            user: { id: "test-owner" },
+            reply: async (payload) => { interactionReply = payload; }
+        };
+        await handleJoinCampaignInteraction(mockButtonInteraction, {});
+        assert.ok(interactionReply?.content?.includes("JOIN_CAMPAIGN_ENABLED=false"));
+
+        const stageRes = await joinCampaignService.stageCampaign({
+            mode: "ALL_TO_TARGET",
+            targetGuildId: "123",
+            requestedAmount: 10
+        });
+        assert.equal(stageRes.ok, false);
+        assert.match(stageRes.error, /ปิดใช้งาน/);
+
+        const startRes = await joinCampaignService.confirmAndStartCampaign({
+            jobId: "some_job",
+            guildId: "123"
+        });
+        assert.equal(startRes.ok, false);
+        assert.match(startRes.error, /ปิดใช้งาน/);
+    } finally {
+        if (prevEnabled !== undefined) {
+            process.env.JOIN_CAMPAIGN_ENABLED = prevEnabled;
+        } else {
+            delete process.env.JOIN_CAMPAIGN_ENABLED;
+        }
+        if (prevOwner !== undefined) {
+            process.env.OWNER_ID = prevOwner;
+        } else {
+            delete process.env.OWNER_ID;
+        }
+    }
+});
+
+test("Join Campaign: Worker fetches target guild on cache miss and fails closed if guild cannot be resolved", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "worker_missing_guild_" + Date.now();
+    const job = repo.createJob({
+        id: testJobId,
+        guildId: "123456789012345678",
+        channelId: "channel_1",
+        mode: "ALL_TO_TARGET",
+        sourceGuildId: null,
+        targetGuildId: "999999999999999999",
+        status: "RUNNING",
+        requestedAmount: 5,
+        selectedAmount: 5,
+        joinedCount: 0
+    });
+
+    const mockClient = {
+        guilds: {
+            cache: new Map(),
+            fetch: async (id) => {
+                if (id === "999999999999999999") return null;
+                throw new Error("Guild not found");
+            }
+        }
+    };
+
+    await assert.rejects(async () => {
+        await campaignWorker.startWorker({
+            job,
+            client: mockClient,
+            repository: repo,
+            targetMemberIds: null
+        });
+        await campaignWorker.waitForCompletion();
+    }, (err) => {
+        return String(err.message).includes("ไม่พบเซิร์ฟเวอร์ปลายทาง");
+    });
+
+    const finishedJob = repo.findJobById(testJobId);
+    assert.equal(finishedJob.status, "FAILED");
+    assert.match(finishedJob.lastError, /ไม่พบเซิร์ฟเวอร์ปลายทาง/);
+});
+
+test("Join Campaign: Adaptive worker caps 429 rate limit retries and marks item failed", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "worker_429_cap_" + Date.now();
+    const job = repo.createJob({
+        id: testJobId,
+        guildId: "123456789012345678",
+        channelId: "channel_1",
+        mode: "ALL_TO_TARGET",
+        sourceGuildId: null,
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 1,
+        selectedAmount: 1,
+        joinedCount: 0
+    });
+
+    repo.createItems(testJobId, [
+        { userId: "rate_limited_user", tokenField: "oauth" }
+    ]);
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    memberCount: 1,
+                    members: {
+                        fetch: async () => new Map(),
+                        cache: new Map()
+                    }
+                }]
+            ])
+        }
+    };
+
+    const originalAddMember = discordApi.addMemberToGuild;
+    let callCount = 0;
+    discordApi.addMemberToGuild = async () => {
+        callCount++;
+        return {
+            ok: false,
+            status: 429,
+            error: "You are being rate limited.",
+            retryAfter: 0.05
+        };
+    };
+
+    try {
+        await campaignWorker.startWorker({
+            job,
+            client: mockClient,
+            repository: repo,
+            targetMemberIds: new Set(),
+            concurrency: 1,
+            delayMs: 10,
+            tokenManager: {
+                getAccessToken: async () => ({ ok: true, accessToken: "mock_tok" }),
+                listAccessTokenCandidates: async () => ({ candidates: [], hasMore: false })
+            }
+        });
+        await campaignWorker.waitForCompletion();
+    } finally {
+        discordApi.addMemberToGuild = originalAddMember;
+    }
+
+    const finishedJob = repo.findJobById(testJobId);
+    assert.equal(finishedJob.status, "FAILED");
+    assert.equal(finishedJob.joinedCount, 0);
+    assert.ok(callCount <= 4);
+    assert.ok(finishedJob.retryCount > 0);
+    const item = repo.db.prepare("SELECT * FROM join_campaign_items WHERE campaign_id = ?").get(testJobId);
+    assert.equal(item.status, "failed");
+    assert.equal(item.last_error, "rate_limit_retries_exceeded");
+});
+
+test("Join Campaign: Startup recovery fails closed and marks job FAILED when worker start fails", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "rec_fail_job_" + Date.now();
+    repo.createJob({
+        id: testJobId,
+        guildId: "123456789012345678",
+        channelId: "channel_1",
+        mode: "ALL_TO_TARGET",
+        sourceGuildId: null,
+        targetGuildId: "invalid_guild_recovery",
+        status: "RUNNING",
+        requestedAmount: 10,
+        selectedAmount: 10,
+        joinedCount: 0
+    });
+
+    const mockClient = {
+        guilds: {
+            cache: new Map(),
+            fetch: async () => { throw new Error("Network offline during recovery"); }
+        }
+    };
+
+    const recoveryResult = await runStartupRecovery({
+        client: mockClient,
+        repository: repo
+    });
+    assert.equal(recoveryResult.recovered, false);
+    assert.ok(recoveryResult.error);
+
+    const failedJob = repo.findJobById(testJobId);
+    assert.equal(failedJob.status, "FAILED");
+    assert.ok(failedJob.completedAt > 0);
+    assert.match(failedJob.lastError, /ไม่พบเซิร์ฟเวอร์ปลายทาง|Network offline during recovery/);
+});
+
+test("Join Campaign: Preflight strictly validates requested amount and bot member permissions", async () => {
+    const prevEnabled = process.env.JOIN_CAMPAIGN_ENABLED;
+    process.env.JOIN_CAMPAIGN_ENABLED = "true";
+    try {
+        const targetGuild = {
+            id: "123456789012345678",
+            name: "Target Server",
+            members: {
+                me: {
+                    permissions: {
+                        has: () => true
+                    }
+                },
+                fetchMe: async () => ({
+                    permissions: {
+                        has: () => true
+                    }
+                }),
+                list: async () => new Map()
+            }
+        };
+        const mockClient = {
+            user: { id: "bot_123" },
+            guilds: {
+                cache: new Map([["123456789012345678", targetGuild]])
+            }
+        };
+
+        const mockTokenManager = {
+            listAccessTokenCandidates: async () => ({
+                candidates: [{ userId: "eligible_user_1", tokenField: "oauth" }],
+                hasMore: false
+            })
+        };
+
+        // Missing permissions in target guild fails validation
+        const validateMissingPermsRes = await validateGuildTargets({
+            mode: { requiresSource: false },
+            client: {
+                user: { id: "bot_123" },
+                guilds: {
+                    cache: new Map([["123456789012345678", {
+                        id: "123456789012345678",
+                        name: "Target Server",
+                        members: { me: null, fetchMe: async () => null }
+                    }]])
+                }
+            },
+            baseConfig: { targetGuildId: "123456789012345678" }
+        });
+        assert.equal(validateMissingPermsRes.ok, false);
+        assert.match(validateMissingPermsRes.error, /ไม่สามารถตรวจสอบสิทธิ์ของบอท/);
+
+        // Requested amount 0 rejected
+        const runResZero = await runPreflight({
+            mode: { requiresSource: false },
+            client: mockClient,
+            baseConfig: { targetGuildId: "123456789012345678" },
+            tokenManager: mockTokenManager,
+            requestedAmount: "0"
+        });
+        assert.equal(runResZero.ok, false);
+        assert.match(runResZero.error, /มากกว่า 0/);
+
+        // Negative requested amount rejected
+        const runResNegative = await runPreflight({
+            mode: { requiresSource: false },
+            client: mockClient,
+            baseConfig: { targetGuildId: "123456789012345678" },
+            tokenManager: mockTokenManager,
+            requestedAmount: "-5"
+        });
+        assert.equal(runResNegative.ok, false);
+        assert.match(runResNegative.error, /จำนวนเต็มบวก/);
+
+        // Non-numeric requested amount rejected
+        const runResAlpha = await runPreflight({
+            mode: { requiresSource: false },
+            client: mockClient,
+            baseConfig: { targetGuildId: "123456789012345678" },
+            tokenManager: mockTokenManager,
+            requestedAmount: "abc"
+        });
+        assert.equal(runResAlpha.ok, false);
+        assert.match(runResAlpha.error, /จำนวนเต็มบวก/);
+
+        // Blank requested amount defaults to readyCount (1)
+        const runResBlank = await runPreflight({
+            mode: { requiresSource: false },
+            client: mockClient,
+            baseConfig: { targetGuildId: "123456789012345678" },
+            tokenManager: mockTokenManager,
+            requestedAmount: ""
+        });
+        assert.equal(runResBlank.ok, true);
+        assert.equal(runResBlank.requestedQuota, 1);
+    } finally {
+        if (prevEnabled !== undefined) {
+            process.env.JOIN_CAMPAIGN_ENABLED = prevEnabled;
+        } else {
+            delete process.env.JOIN_CAMPAIGN_ENABLED;
+        }
+    }
 });

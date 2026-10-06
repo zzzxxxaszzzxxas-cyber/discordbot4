@@ -849,7 +849,8 @@ async function listAccessTokenCandidates({
     afterId = null,
     model = OAuthUser,
     env = process.env,
-    seenUsers = null
+    seenUsers = null,
+    additionalFilter = null
 } = {}) {
     const effectiveGuildId = String(sourceGuildId || (!allowAllGuilds ? targetGuildId : "") || "").trim();
     if (!allowAllGuilds && !effectiveGuildId) {
@@ -875,6 +876,10 @@ async function listAccessTokenCandidates({
         },
         { $or: tokenBranches }
     ];
+
+    if (additionalFilter && typeof additionalFilter === "object" && Object.keys(additionalFilter).length > 0) {
+        andConditions.push(additionalFilter);
+    }
 
     if (effectiveGuildId) {
         andConditions.push(

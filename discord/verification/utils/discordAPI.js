@@ -145,7 +145,9 @@ function sleep(ms) {
 function parseRetryAfterMs(res) {
     const header = res.headers?.get?.("retry-after");
     const seconds = Number(header);
-    if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds * 1000, 10000);
+    if (Number.isFinite(seconds) && seconds > 0) {
+        return Math.min(Math.round(seconds * 1000), 5 * 60 * 1000);
+    }
     return null;
 }
 

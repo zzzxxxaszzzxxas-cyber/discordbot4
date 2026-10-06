@@ -39,13 +39,20 @@ async function handleModalSubmit(interaction, client) {
             });
         }
 
-        // Live Target Membership Check
-        const targetMemberIds = await getLiveTargetMemberIds(validation.targetGuild);
-        const readyCount = await countEligibleCandidates({
-            mode,
-            baseConfig,
-            targetMemberIds
-        }).catch(() => 0);
+        // Live Target Membership Check (Fail-closed)
+        let readyCount;
+        try {
+            const targetMemberIds = await getLiveTargetMemberIds(validation.targetGuild);
+            readyCount = await countEligibleCandidates({
+                mode,
+                baseConfig,
+                targetMemberIds
+            });
+        } catch (err) {
+            return interaction.editReply({
+                content: `> ${emoji.error} **ไม่สามารถตรวจสอบจำนวนสมาชิกที่พร้อมดึงได้:** ${err.message || "เกิดข้อผิดพลาดในการตรวจสอบฐานข้อมูล กรุณาลองใหม่อีกครั้งครับ"}`
+            });
+        }
 
         // Find existing panel for this channel in SQLite
         const existingPanel = repository.findPanelByChannelId(interaction.channelId);

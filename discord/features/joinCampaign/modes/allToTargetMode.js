@@ -35,10 +35,18 @@ class AllToTargetMode {
         ];
     }
 
+    getBaseSetupFields(current = {}) {
+        return this.getBaseModalFields(current);
+    }
+
     buildMongoFilter() {
         return {
             isDeleted: { $ne: true }
         };
+    }
+
+    resolveCandidateFilter(baseConfig = {}) {
+        return this.buildMongoFilter(baseConfig);
     }
 
     formatPanelFields({ panelState, readyCount, liveJob, targetGuildName }) {

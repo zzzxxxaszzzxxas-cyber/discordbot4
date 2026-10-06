@@ -30,7 +30,8 @@ function getJoinCampaignConfig(env = process.env) {
         delayMs: readPositiveInt(env.JOIN_CAMPAIGN_DELAY_MS, 1500, 100, 60000),
         progressEvery: readPositiveInt(env.JOIN_CAMPAIGN_PROGRESS_EVERY, 50, 1, 1000),
         refreshMarginMs: readPositiveInt(env.JOIN_CAMPAIGN_REFRESH_MARGIN_MS, 60 * 60 * 1000, 60 * 1000, 7 * 24 * 60 * 60 * 1000),
-        failMax: readPositiveInt(env.OAUTH_TOKEN_REFRESH_FAIL_MAX, 3, 1, 20)
+        failMax: readPositiveInt(env.OAUTH_TOKEN_REFRESH_FAIL_MAX, 3, 1, 20),
+        maxRateLimitRetries: readPositiveInt(env.JOIN_CAMPAIGN_MAX_RATE_LIMIT_RETRIES, 3, 1, 10)
     };
 }
 

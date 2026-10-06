@@ -87,8 +87,22 @@ class CampaignWorker {
         const startTime = job.createdAt || Date.now();
         const mode = getMode(job.mode);
         const targetGuildId = String(job.targetGuildId);
-        const targetGuild = client.guilds.cache.get(targetGuildId);
-        const targetGuildName = targetGuild?.name || job.targetGuildName || targetGuildId;
+        let targetGuild = client.guilds.cache.get(targetGuildId);
+        if (!targetGuild && client.guilds?.fetch) {
+            targetGuild = await client.guilds.fetch(targetGuildId).catch(() => null);
+        }
+
+        if (!targetGuild) {
+            const failClosedMsg = "ไม่พบเซิร์ฟเวอร์ปลายทาง หรือบอทไม่ได้อยู่ในเซิร์ฟเวอร์เป้าหมายแล้ว (Fail-Closed)";
+            repository.updateJob(job.id, {
+                status: "FAILED",
+                lastError: failClosedMsg,
+                completedAt: Date.now()
+            });
+            throw new Error(failClosedMsg);
+        }
+
+        const targetGuildName = targetGuild.name || job.targetGuildName || targetGuildId;
         const requestedQuota = Number(job.requestedAmount) || 0;
 
         let joinedCount = Number(job.joinedCount) || 0;
@@ -358,16 +372,23 @@ class CampaignWorker {
                             consecutiveSuccesses = 0;
                             currentConcurrency = Math.max(minConcurrency, Math.floor(currentConcurrency / 2));
 
-                            const explicitRetry = Number(res?.retryAfter);
-                            const retryAfterMs = Number.isFinite(explicitRetry) && explicitRetry > 0
-                                ? explicitRetry
-                                : 2500;
-                            const backoffDelay = retryAfterMs + randomJitter(50, 150);
+                            const maxRateLimitRetries = Number(config.maxRateLimitRetries || 3);
+                            if (Number(item.attempts || 0) < maxRateLimitRetries) {
+                                const explicitRetry = Number(res?.retryAfter);
+                                const retryAfterMs = Number.isFinite(explicitRetry) && explicitRetry > 0
+                                    ? explicitRetry
+                                    : 2500;
+                                const backoffDelay = retryAfterMs + randomJitter(50, 150);
 
-                            backoffUntil = Date.now() + backoffDelay;
+                                backoffUntil = Date.now() + backoffDelay;
 
-                            // Re-queue item for retry with backoff delay
-                            repository.incrementItemAttempt(job.id, userId, "rate_limited", backoffDelay);
+                                // Re-queue item for retry with backoff delay
+                                repository.incrementItemAttempt(job.id, userId, "rate_limited", backoffDelay);
+                            } else {
+                                failedCount++;
+                                repository.updateItemStatus(job.id, userId, "failed", "rate_limit_retries_exceeded");
+                                batchBuffer.push({ userId, status: "failed" });
+                            }
                         } else if (status >= 500 || status === 0) {
                             // Server / Network Transient Error
                             retryCount++;
@@ -437,13 +458,22 @@ class CampaignWorker {
 
                         // STEP 7: Panel update debounced
                         await updatePanelDebounced(false);
+                    } catch (taskErr) {
+                        console.error(`[JoinCampaign] Task execution error for user ${item.userId}:`, taskErr?.message);
+                        failedCount++;
+                        try {
+                            repository.updateItemStatus(job.id, item.userId, "failed", taskErr?.message || "task_error");
+                        } catch (_) {}
                     } finally {
                         inFlightJoins--;
                     }
                 })();
 
                 activeTasks.add(taskPromise);
-                taskPromise.finally(() => activeTasks.delete(taskPromise));
+                taskPromise.then(
+                    () => activeTasks.delete(taskPromise),
+                    () => activeTasks.delete(taskPromise)
+                );
 
                 // Microtask yield instead of artificial 50ms throttle
                 await new Promise(resolve => setImmediate(resolve));
@@ -588,20 +618,32 @@ class CampaignWorker {
                 (alreadyCount > 0 ? ` | อยู่ในเซิร์ฟแล้ว **${Number(alreadyCount).toLocaleString("th-TH")}** คน` : "") +
                 (failedCount > 0 ? ` | ไม่สำเร็จ **${Number(failedCount).toLocaleString("th-TH")}** คน` : "");
 
-            // Recalculate remaining ready count for target guild
-            const targetGuild = client.guilds.cache.get(String(job.targetGuildId));
-            const liveMemberIds = targetGuild ? await getLiveTargetMemberIds(targetGuild).catch(() => new Set()) : new Set();
-            const freshReadyCount = await countEligibleCandidates({
-                mode,
-                baseConfig: {
-                    sourceGuildId: job.sourceGuildId,
-                    targetGuildId: job.targetGuildId
-                },
-                tokenManager,
-                targetMemberIds: liveMemberIds
-            }).catch(() => null);
-
+            // Recalculate remaining ready count for target guild (Fail-closed)
             const panel = repository.findPanelByChannelId(job.startedByChannelId || "");
+            let freshReadyCount = null;
+            try {
+                let targetGuild = client.guilds.cache.get(String(job.targetGuildId));
+                if (!targetGuild && client.guilds?.fetch) {
+                    targetGuild = await client.guilds.fetch(String(job.targetGuildId)).catch(() => null);
+                }
+                if (targetGuild) {
+                    const liveMemberIds = await getLiveTargetMemberIds(targetGuild);
+                    freshReadyCount = await countEligibleCandidates({
+                        mode,
+                        baseConfig: {
+                            sourceGuildId: job.sourceGuildId,
+                            targetGuildId: job.targetGuildId
+                        },
+                        tokenManager,
+                        targetMemberIds: liveMemberIds
+                    });
+                } else {
+                    freshReadyCount = panel?.lastReadyCount ?? null;
+                }
+            } catch (_) {
+                // If member check failed, retain previous count to avoid presenting inflated numbers
+                freshReadyCount = panel?.lastReadyCount ?? null;
+            }
             if (panel) {
                 repository.savePanel({
                     ...panel,

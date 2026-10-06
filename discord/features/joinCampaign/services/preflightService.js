@@ -10,7 +10,11 @@ function isValidSnowflake(id) {
 }
 
 async function getLiveTargetMemberIds(guild) {
-    if (!guild) return new Set();
+    if (!guild) {
+        const err = new Error("ไม่พบข้อมูลเซิร์ฟเวอร์ปลายทางสำหรับตรวจสอบสมาชิก (Guild object is null or undefined)");
+        err.code = "GUILD_NOT_FOUND";
+        throw err;
+    }
 
     let attempts = 0;
     while (attempts < 2) {
@@ -37,11 +41,6 @@ async function getLiveTargetMemberIds(guild) {
             return memberIds;
         } catch (err) {
             if (attempts >= 2) {
-                // Fail closed: Do NOT pretend partial cache represents full membership
-                // If memberCount is close to cache size (within small margin), cache might be acceptable in tests
-                if (guild.memberCount && guild.members?.cache?.size && Math.abs(guild.memberCount - guild.members.cache.size) <= 5) {
-                    return new Set(guild.members.cache.keys());
-                }
                 const error = new Error("ไม่สามารถดึงรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้ กรุณาลองใหม่อีกครั้งนะครับ");
                 error.code = "FETCH_MEMBERS_FAILED";
                 throw error;
@@ -50,7 +49,9 @@ async function getLiveTargetMemberIds(guild) {
         }
     }
 
-    return new Set();
+    const error = new Error("ไม่สามารถดึงรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้ครบถ้วน");
+    error.code = "FETCH_MEMBERS_FAILED";
+    throw error;
 }
 
 async function validateGuildTargets({ client, mode, baseConfig = {}, webhookUrl = null, config = getJoinCampaignConfig() }) {
@@ -84,9 +85,12 @@ async function validateGuildTargets({ client, mode, baseConfig = {}, webhookUrl 
         return { ok: false, error: "บอทไม่ได้อยู่ในเซิร์ฟเวอร์ปลายทาง กรุณาเชิญบอทเข้าเซิร์ฟเวอร์ก่อนนะครับ" };
     }
 
-    // Check bot permission in target guild
-    const botMember = targetGuild.members?.me || await targetGuild.members.fetchMe().catch(() => null);
-    if (botMember && !botMember.permissions.has(PermissionFlagsBits.CreateInstantInvite)) {
+    // Check bot permission in target guild (Fail-closed)
+    const botMember = targetGuild.members?.me || await targetGuild.members?.fetchMe?.().catch(() => null);
+    if (!botMember) {
+        return { ok: false, error: "ไม่สามารถตรวจสอบสิทธิ์ของบอทในเซิร์ฟเวอร์ปลายทางได้ กรุณาตรวจสอบว่าบอทมีสิทธิ์ในเซิร์ฟเวอร์อย่างถูกต้อง" };
+    }
+    if (!botMember.permissions?.has(PermissionFlagsBits.CreateInstantInvite)) {
         return { ok: false, error: "บอทขาดสิทธิ์ 'สร้างคำเชิญ' (Create Instant Invite) ในเซิร์ฟเวอร์ปลายทาง" };
     }
 
@@ -125,6 +129,10 @@ async function validateGuildTargets({ client, mode, baseConfig = {}, webhookUrl 
 }
 
 async function runPreflight({ client, mode, baseConfig = {}, webhookUrl = null, tokenManager, requestedAmount = null, config = getJoinCampaignConfig() }) {
+    if (!config.enabled) {
+        return { ok: false, error: "ระบบดึงสมาชิกถูกปิดใช้งานอยู่ในขณะนี้ครับ (JOIN_CAMPAIGN_ENABLED=false)" };
+    }
+
     const targetValidation = await validateGuildTargets({ client, mode, baseConfig, webhookUrl, config });
     if (!targetValidation.ok) {
         return targetValidation;
@@ -157,12 +165,25 @@ async function runPreflight({ client, mode, baseConfig = {}, webhookUrl = null, 
     }
 
     // Calculate Joined Quota:
-    // If requestedAmount is provided, requestedQuota = requestedAmount (DO NOT clamp with readyCount!)
+    // If requestedAmount is provided, strictly validate positive integer (DO NOT clamp with readyCount!)
     // If blank or not provided, default to readyCount.
-    const parsedAmount = Number(requestedAmount);
     let requestedQuota = readyCount;
-    if (Number.isFinite(parsedAmount) && parsedAmount > 0) {
-        requestedQuota = Math.floor(parsedAmount);
+    if (requestedAmount !== null && requestedAmount !== undefined && String(requestedAmount).trim() !== "") {
+        const rawStr = String(requestedAmount).trim();
+        if (!/^\d+$/.test(rawStr)) {
+            return {
+                ok: false,
+                error: "จำนวนสมาชิกที่ต้องการดึงต้องเป็นตัวเลขจำนวนเต็มบวกเท่านั้นครับ (เช่น 50, 100) หรือเว้นว่างไว้เพื่อดึงทั้งหมด"
+            };
+        }
+        const parsed = Number(rawStr);
+        if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+            return {
+                ok: false,
+                error: "จำนวนสมาชิกที่ต้องการดึงต้องมากกว่า 0 ครับ หรือเว้นว่างไว้เพื่อดึงทั้งหมด"
+            };
+        }
+        requestedQuota = parsed;
     }
 
     return {

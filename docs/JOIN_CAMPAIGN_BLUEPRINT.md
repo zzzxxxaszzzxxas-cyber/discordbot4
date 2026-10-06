@@ -284,7 +284,7 @@ class CampaignModeStrategy {
 
 # 7. Database Persistence & Crash Shield Recovery (`database/` + `recovery/`)
 
-### 7.1 SQLite Schema (`011_join_campaign.sql`)
+### 7.1 SQLite Schema (Reflected with Migration 007 & Production Hardening)
 ```sql
 CREATE TABLE IF NOT EXISTS join_campaign_jobs (
     id TEXT PRIMARY KEY,
@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS join_campaign_jobs (
     source_guild_name TEXT,
     target_guild_id TEXT NOT NULL,
     target_guild_name TEXT,
-    status TEXT NOT NULL, -- 'STAGE', 'RUNNING', 'COMPLETED', 'FAILED'
+    status TEXT NOT NULL, -- 'STAGE', 'RUNNING', 'COMPLETED', 'FAILED', 'PARTIAL'
     requested_amount INTEGER NOT NULL,
     selected_amount INTEGER NOT NULL,
     joined_count INTEGER NOT NULL DEFAULT 0,
@@ -301,12 +301,21 @@ CREATE TABLE IF NOT EXISTS join_campaign_jobs (
     failed_count INTEGER NOT NULL DEFAULT 0,
     processed_count INTEGER NOT NULL DEFAULT 0,
     retry_count INTEGER NOT NULL DEFAULT 0,
-    webhook_url TEXT,
+    current_concurrency INTEGER NOT NULL DEFAULT 8,
+    current_throughput REAL NOT NULL DEFAULT 0.0,
+    recovery_count INTEGER NOT NULL DEFAULT 0,
+    candidate_cursor TEXT,
+    last_error TEXT,
     started_by_user_id TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     completed_at INTEGER
+    -- หมายเหตุ: migration 007 ถอดคอลัมน์ webhook_url ออกจาก SQLite อย่างถาวรเพื่อความปลอดภัย
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_join_campaign_single_active 
+ON join_campaign_jobs((1))
+WHERE status IN ('RUNNING', 'STAGE');
 
 CREATE TABLE IF NOT EXISTS join_campaign_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -338,22 +347,26 @@ CREATE INDEX IF NOT EXISTS idx_join_jobs_status ON join_campaign_jobs(status, up
 CREATE INDEX IF NOT EXISTS idx_join_items_claim ON join_campaign_items(campaign_id, status, leased_until);
 ```
 
-### 7.2 Boot Recovery Strategy
-1. ตอนบอทสตาร์ตเครื่อง:
-   ```js
-   async function runStartupRecovery({ repository, client, worker }) {
-       const interruptedJob = await repository.findActiveRunningJob();
-       if (!interruptedJob) return;
-       
-       console.log(`[JoinCampaign] Recovering interrupted campaign: ${interruptedJob.id}`);
-       // ปล่อย lease ที่ค้างอยู่
-       await repository.releaseExpiredLeases(interruptedJob.id);
-       
-       // สานต่อ Worker อัตโนมัติโดยใช้ campaign_id เดิมและ progress เดิม
-       worker.resumeCampaign(interruptedJob);
-   }
-   ```
-2. ดึงต่อจนกว่า `joined_count` จะครบ `requested_amount` ตาม Joined Quota เดิม
+### 7.2 Crash Window 201/204 Reconciliation & Idempotent Resume
+หากบอทแครชหลังจาก Discord REST API รับการเข้าเซิร์ฟเวอร์เรียบร้อยแล้ว (201 Created หรือ 204 Already Member) แต่ระบบแครชก่อน SQLite transaction จะ commit สถานะ:
+1. ตอนที่ `runStartupRecovery` ทำงาน Item ดังกล่าวจะหมดอายุ lease (`leased_until` หมดอายุ) และถูกคืนสถานะเป็น `pending`
+2. เมื่อ worker ทำการ resume งานต่อ ระบบจะตรวจสอบสมาชิกปัจจุบันของ Target Guild (Live target query หรือ Discord API `Add Guild Member` รอบใหม่):
+   - หากผู้ใช้เข้าเซิร์ฟเวอร์ไปแล้ว Discord จะตอบกลับ **204 No Content (Already Member)**
+   - Worker จะตรวจจับสถานะ 204 และบันทึก item เป็น `already_member` ทันที โดย**ไม่เพิ่ม** `joined_count` ซ้ำสอง
+   - ระบบจะหยิบ candidate คนถัดไปมาประมวลผล เพื่อให้เข้าตาม Joined Quota ที่เหลืออยู่ได้อย่างแม่นยำ 100%
+
+### 7.3 Boot Recovery & Master Switch Enforcement
+1. **Master Switch Gate (`JOIN_CAMPAIGN_ENABLED`)**:
+   - ตรวจสอบ `config.enabled` ที่ Command Handler (`/join-panel`), Interaction Router และ Service Layer
+   - หากปิดใช้งาน ระบบจะไม่ยอมรับคำสั่งหรือ interaction ใดๆ และปฏิเสธการเริ่มงานแบบ Fail-Closed
+2. **Fail-Closed Target Guild Resolution**:
+   - หาก Target Guild ไม่อยู่ใน Discord.js cache ระบบจะทำการ fetch สดจาก Discord API
+   - หาก fetch ไม่สำเร็จหรือไม่พบบอทใน Target Guild Worker จะหยุดทันที ปรับสถานะงานเป็น `FAILED` และไม่ทำการยิงเพิ่มสมาชิก
+3. **Bounded 429 Rate-Limit Retry**:
+   - เคารพ header `Retry-After` สดจาก Discord ได้สูงสุดถึง 5 นาที (ไม่ตัดเหลือ 10 วินาทีแบบเดิม)
+   - จำกัดจำนวนครั้งการ retry เมื่อติด 429 ไม่เกิน `JOIN_CAMPAIGN_MAX_RATE_LIMIT_RETRIES` (ค่าเริ่มต้น 3 ครั้ง) หากเกินจะปรับสถานะเป็น `failed` (`rate_limited`) เพื่อให้ Campaign จบงานได้ตามปกติ ไม่ค้าง loop
+4. **Startup Recovery Failure Handling**:
+   - หาก worker resume ล้มเหลว (เช่น Target Guild ถูกลบไประหว่างบอทดับ) `runStartupRecovery` จะบันทึกสถานะงานเป็น `FAILED` พร้อมบันทึก `lastError` และ `completedAt` และคืนค่า `recovered: false` ป้องกันงานค้างในสถานะ `RUNNING` ตลอดกาล
 
 ---
 

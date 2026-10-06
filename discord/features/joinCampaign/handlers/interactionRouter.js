@@ -2,6 +2,7 @@
 
 const emoji = require("../ui/emojis");
 const { isOwner } = require("./commandHandler");
+const { getJoinCampaignConfig } = require("../config");
 const { getMode } = require("../modes/modeRegistry");
 const { buildBaseSetupModal, buildStartOptionsModal, CUSTOM_IDS } = require("../ui/modals");
 const { IDS: PANEL_IDS, buildPanelPayload } = require("../ui/panelBuilder");
@@ -29,6 +30,17 @@ async function handleJoinCampaignInteraction(interaction, client) {
     if (!isOwner(interaction)) {
         const reply = {
             content: `> ${emoji.no_entry} ปุ่มควบคุมนี้ใช้ได้เฉพาะ **เจ้าของบอท** เท่านั้นครับ`,
+            ephemeral: true
+        };
+        if (interaction.replied || interaction.deferred) await interaction.followUp(reply);
+        else await interaction.reply(reply);
+        return true;
+    }
+
+    const campaignConfig = getJoinCampaignConfig();
+    if (!campaignConfig.enabled) {
+        const reply = {
+            content: `> ${emoji.alert} ระบบดึงสมาชิกถูกปิดใช้งานอยู่ในขณะนี้ครับ (\`JOIN_CAMPAIGN_ENABLED=false\`)`,
             ephemeral: true
         };
         if (interaction.replied || interaction.deferred) await interaction.followUp(reply);

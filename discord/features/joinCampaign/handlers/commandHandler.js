@@ -4,6 +4,7 @@ const { isConfiguredOwner } = require("../../../core/env");
 const appConfig = require("../../../config.json");
 const emoji = require("../ui/emojis");
 const { getMode } = require("../modes/modeRegistry");
+const { getJoinCampaignConfig } = require("../config");
 const { buildPanelPayload } = require("../ui/panelBuilder");
 const { getLiveTargetMemberIds, validateGuildTargets } = require("../services/preflightService");
 const { countEligibleCandidates } = require("../services/candidateQueryService");
@@ -27,6 +28,14 @@ async function handleJoinPanelCommand(interaction, client) {
     if (!isOwner(interaction)) {
         return interaction.reply({
             content: `> ${emoji.no_entry} คำสั่งนี้ใช้ได้เฉพาะ **เจ้าของบอท** เท่านั้นครับ`,
+            ephemeral: true
+        });
+    }
+
+    const campaignConfig = getJoinCampaignConfig();
+    if (!campaignConfig.enabled) {
+        return interaction.reply({
+            content: `> ${emoji.alert} ระบบดึงสมาชิกถูกปิดใช้งานอยู่ในขณะนี้ครับ (\`JOIN_CAMPAIGN_ENABLED=false\`)`,
             ephemeral: true
         });
     }

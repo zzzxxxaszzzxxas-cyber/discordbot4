@@ -56,18 +56,21 @@ describe('OAuth callback integration contracts', () => {
 
 describe('OAuth Single Authority source and architectural contracts', () => {
     const oauthTokenManager = require('../discord/core/oauthTokenManager');
-    const joinCampaignSource = fs.readFileSync('discord/features/joinCampaign.js', 'utf8');
+    const candidateQuerySource = fs.readFileSync('discord/features/joinCampaign/services/candidateQueryService.js', 'utf8');
+    const campaignWorkerSource = fs.readFileSync('discord/features/joinCampaign/worker/campaignWorker.js', 'utf8');
     const ownerServiceSource = fs.readFileSync('discord/verification/ownerService.js', 'utf8');
     const encryptionMigrationSource = fs.readFileSync('discord/verification/services/encryptionMigration.js', 'utf8');
     const lifecycleSource = fs.readFileSync('discord/verification/lifecycle.js', 'utf8');
 
     test('joinCampaign delegates candidate selection and token retrieval to oauthTokenManager', () => {
-        expect(joinCampaignSource).toContain('require("../core/oauthTokenManager")');
-        expect(joinCampaignSource).toContain('tokenManager.listAccessTokenCandidates(');
-        expect(joinCampaignSource).toContain('tokenManager.getAccessToken(');
-        expect(joinCampaignSource).not.toMatch(/decryptToken\(/);
-        expect(joinCampaignSource).not.toContain('markTokenRefreshFailure');
-        expect(joinCampaignSource).not.toMatch(/adminOAuth\s*\?\s*["']adminOAuth["']\s*:\s*["']oauth["']/);
+        expect(candidateQuerySource).toContain('require("../../../core/oauthTokenManager")');
+        expect(candidateQuerySource).toContain('tokenManager.listAccessTokenCandidates(');
+        expect(campaignWorkerSource).toContain('require("../../../core/oauthTokenManager")');
+        expect(campaignWorkerSource).toContain('tokenManager.getAccessToken(');
+        expect(candidateQuerySource).not.toMatch(/decryptToken\(/);
+        expect(campaignWorkerSource).not.toMatch(/decryptToken\(/);
+        expect(candidateQuerySource).not.toContain('markTokenRefreshFailure');
+        expect(campaignWorkerSource).not.toContain('markTokenRefreshFailure');
     });
 
     test('ownerService delegates token recovery, metadata and raw reveal to oauthTokenManager', () => {
@@ -102,7 +105,8 @@ describe('OAuth Single Authority source and architectural contracts', () => {
             'discord/verification/ownerService.js',
             'discord/verification/services/encryptionMigration.js',
             'discord/verification/lifecycle.js',
-            'discord/features/joinCampaign.js'
+            'discord/features/joinCampaign/services/candidateQueryService.js',
+            'discord/features/joinCampaign/worker/campaignWorker.js'
         ];
         for (const file of prodFiles) {
             const content = fs.readFileSync(file, 'utf8');

@@ -153,9 +153,10 @@ class JoinCampaignRepository {
             setClauses.push("candidate_cursor = ?");
             params.push(updates.candidateCursor ? String(updates.candidateCursor) : null);
         }
-        if (updates.lastError !== undefined) {
+        const lastErr = updates.lastError !== undefined ? updates.lastError : updates.last_error;
+        if (lastErr !== undefined) {
             setClauses.push("last_error = ?");
-            params.push(updates.lastError ? String(updates.lastError) : null);
+            params.push(lastErr ? String(lastErr) : null);
         }
         if (updates.completedAt !== undefined) {
             setClauses.push("completed_at = ?");

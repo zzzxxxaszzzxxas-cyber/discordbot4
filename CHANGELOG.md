@@ -1,6 +1,23 @@
 # Changelog
 
-## [Unreleased] - 2026-10-04
+## [Unreleased] - 2026-10-06
+
+- **Join Campaign Subsystem Production Hardening & Complete Audit Closure:**
+  - **Master Switch Gate (`JOIN_CAMPAIGN_ENABLED`):** Enforced across Command Handler (`/join-panel`), Interaction Router, and Service Layer (`stageCampaign`, `confirmAndStartCampaign`, `runPreflight`). Fails closed with an informational Thai alert when disabled.
+  - **Fail-Closed Target Guild Resolution:** Fixed cache miss handling in `campaignWorker.js` and `startupRecovery.js`. Target guilds are fetched directly from Discord REST API on cache miss; failure halts the worker and transitions job status to `FAILED` instead of continuing with an empty member set.
+  - **Heuristic Cache Fallback Removal:** Removed dangerous `Math.abs(memberCount - cachedMembers) <= 5` heuristic from `getLiveTargetMemberIds()`. All queries require authoritative complete fetches or fail closed.
+  - **Bounded 429 Rate-Limit Retries:** Introduced `JOIN_CAMPAIGN_MAX_RATE_LIMIT_RETRIES` (default 3) in `config.js` and `campaignWorker.js`. Rate-limited items are bounded and transition to `failed` (`rate_limited`) rather than causing infinite campaign execution loops.
+  - **Full-Fidelity Retry-After Header:** Updated `discordAPI.parseRetryAfterMs()` to preserve full seconds up to 5 minutes without artificial 10,000ms truncation.
+  - **Orphan Job Prevention & Safe Worker Startup:** Added try/catch and error cleanup around `campaignWorker.startWorker()` in `confirmAndStartCampaign()`, preventing orphan `RUNNING` jobs in SQLite.
+  - **Startup Recovery Resilience:** `startupRecovery.js` catches worker resume errors, updates SQLite job with `status: 'FAILED'`, `lastError`, and `completedAt`, and returns `{ recovered: false }`. Added dual support for `updates.lastError` and `updates.last_error` in `JoinCampaignRepository.js`.
+  - **Panel State Accuracy:** Fixed `_finishPanelUpdate()` in `campaignWorker.js` to preserve `panel?.lastReadyCount` on member fetch failures rather than faking 0 ready count.
+  - **Worker Async Promise Safety:** Wrapped item execution IIFE with try/catch and chained `.then(cleanup, cleanup)` in `campaignWorker.js` to eliminate unhandled promise rejections.
+  - **Phase 1 Fail-Closed Modal Query:** Replaced `catch(() => 0)` in `modalSubmitHandler.js` with fail-closed error messaging on candidate query errors.
+  - **Strict Amount Validation:** `runPreflight` strictly rejects non-positive or non-integer inputs ("0", "-5", "abc", decimals), and defaults empty input to all eligible candidates.
+  - **Target Guild Bot Permission Check:** Preflight validates that bot member exists in target guild and possesses `CreateInstantInvite` permission before allowing a campaign to be staged.
+  - **Mode Strategy Blueprint Aliases:** Added `getBaseSetupFields` and `resolveCandidateFilter` aliases to mode strategies.
+  - **Legacy Monolith Facade Migration:** Replaced the legacy 815-line `discord/features/joinCampaign.js` implementation with a clean backward-compatible facade delegating directly to `discord/features/joinCampaign/index.js`.
+  - **Audit Quality & Test Coverage:** All 34 join campaign unit/subsystem tests and all 547 verification tests pass with 100% success across 64 suites; passes all 10 `npm run check` gates cleanly.
 
 - **OAuth Token Lifecycle Consolidation & Audit Remediation (`discord/core/oauthTokenManager.js`, `discord/features/joinCampaign.js`):**
   - **P1 Consent Authorization Guard:** `listAccessTokenCandidates()` now enforces strict fail-closed consent filtering: requires explicit `targetGuildId` and filters `lastVerify.guildId === targetGuildId` alongside `lastVerify.result === "success"`, preventing unverified or failed verification users from being targeted by join campaigns.
