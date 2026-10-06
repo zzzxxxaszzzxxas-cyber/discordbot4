@@ -33,7 +33,13 @@
   - **Target Guild Bot Permission Check:** Preflight validates that bot member exists in target guild and possesses `CreateInstantInvite` permission before allowing a campaign to be staged.
   - **Mode Strategy Blueprint Aliases:** Added `getBaseSetupFields` and `resolveCandidateFilter` aliases to mode strategies.
   - **Legacy Monolith Facade Migration:** Replaced the legacy 815-line `discord/features/joinCampaign.js` implementation with a clean backward-compatible facade delegating directly to `discord/features/joinCampaign/index.js`.
-  - **Audit Quality & Test Coverage:** All 33 join campaign subsystem tests and full regression suites pass with 100% success; passes all quality, security, and release gates cleanly.
+  - **P2 Candidate Query MongoDB Filter Hardening:** Wrapped token existence and refresh failure conditions inside `$and: [ { $or: ... }, { $or: ... } ]` in `oauthTokenManager.listAccessTokenCandidates()`, eliminating JavaScript object literal duplicate key collision and ensuring MongoDB filters both conditions.
+  - **P2 Scan Cursor Real-Time Advancement:** Updated `candidateCursor` immediately upon receiving stream items in `campaignWorker.js`, guaranteeing the cursor advances past duplicate or skipped users and prevents redundant re-scans upon restart.
+  - **P2 Queue Starvation Prevention:** Refactored `JoinCampaignRepository.countPendingItems()` to count unclaimed items (`status = 'pending'`) by default, preventing concurrent worker pools from stalling candidate top-ups.
+  - **P2 Confirm-Time Zero Candidates Safeguard:** `confirmAndStartCampaign()` strictly rejects campaign start and creates no SQLite job if live preflight candidate count (`freshReadyCount`) evaluates to 0.
+  - **P2 Dead State Map Elimination:** Removed unused `_activeWebhooks` and `_activeTargetMemberSets` from `JoinCampaignService`, ensuring single-source-of-truth job parameters and eliminating potential memory leak vectors.
+  - **P2 Dashboard Duration Column & Status Color:** Added Duration (`ระยะเวลา`) column with human-readable formatting, Throughput (เฉลี่ย) clarification, and `interrupted` status badge color to `/join-campaign` history dashboard.
+  - **Audit Quality & Test Coverage:** All 35 join campaign subsystem tests and full regression suites pass with 100% success; passes all quality, security, and release gates cleanly.
 
 - **OAuth Token Lifecycle Consolidation & Audit Remediation (`discord/core/oauthTokenManager.js`, `discord/features/joinCampaign.js`):**
   - **P1 Consent Authorization Guard:** `listAccessTokenCandidates()` now enforces strict fail-closed consent filtering: requires explicit `targetGuildId` and filters `lastVerify.guildId === targetGuildId` alongside `lastVerify.result === "success"`, preventing unverified or failed verification users from being targeted by join campaigns.

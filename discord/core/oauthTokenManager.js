@@ -859,15 +859,21 @@ async function listAccessTokenCandidates({
 
     const config = getOAuthRefreshConfig(env);
     const tokenBranches = TOKEN_FIELDS.map(tokenField => ({
-        $or: [
-            { [`${tokenField}.encryptedRefreshToken`]: { $exists: true, $ne: "" } },
-            { [`${tokenField}.encryptedAccessToken`]: { $exists: true, $ne: "" } }
+        $and: [
+            {
+                $or: [
+                    { [`${tokenField}.encryptedRefreshToken`]: { $exists: true, $ne: "" } },
+                    { [`${tokenField}.encryptedAccessToken`]: { $exists: true, $ne: "" } }
+                ]
+            },
+            {
+                $or: [
+                    { [`${tokenField}.refreshFailCount`]: { $exists: false } },
+                    { [`${tokenField}.refreshFailCount`]: { $lt: config.failMax } }
+                ]
+            }
         ],
-        [`${tokenField}.revokedAt`]: { $in: [null] },
-        $or: [
-            { [`${tokenField}.refreshFailCount`]: { $exists: false } },
-            { [`${tokenField}.refreshFailCount`]: { $lt: config.failMax } }
-        ]
+        [`${tokenField}.revokedAt`]: { $in: [null] }
     }));
 
     const andConditions = [

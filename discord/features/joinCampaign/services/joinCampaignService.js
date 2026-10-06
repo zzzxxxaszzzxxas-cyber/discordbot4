@@ -12,10 +12,7 @@ const { getMode } = require("../modes/modeRegistry");
 const stagedSessions = new Map();
 
 class JoinCampaignService {
-    constructor() {
-        this._activeWebhooks = new Map();
-        this._activeTargetMemberSets = new Map();
-    }
+    constructor() {}
 
     get isRunning() {
         return campaignWorker.isRunning;
@@ -159,6 +156,13 @@ class JoinCampaignService {
             };
         }
 
+        if (freshReadyCount === 0) {
+            return {
+                ok: false,
+                error: "ไม่พบสมาชิกที่พร้อมดึงเข้าเซิร์ฟเวอร์ในขณะนี้ (หรือทุกคนอยู่ในเซิร์ฟเวอร์เรียบร้อยแล้ว)"
+            };
+        }
+
         // Persist initial job in SQLite (Notice: webhookUrl is NOT stored in SQLite)
         let job;
         try {
@@ -194,14 +198,6 @@ class JoinCampaignService {
                 };
             }
             throw err;
-        }
-
-        // Retain webhook in memory for active campaign
-        if (session.webhookUrl) {
-            this._activeWebhooks.set(jobId, session.webhookUrl);
-        }
-        if (preflight.targetMemberIds) {
-            this._activeTargetMemberSets.set(jobId, preflight.targetMemberIds);
         }
 
         // Associate panel with active job and requested quota in SQLite
@@ -242,14 +238,9 @@ class JoinCampaignService {
                             completedAt: Date.now()
                         });
                     } catch (_) {}
-                }).finally(() => {
-                    this._activeWebhooks.delete(jobId);
-                    this._activeTargetMemberSets.delete(jobId);
                 });
             }
         } catch (err) {
-            this._activeWebhooks.delete(jobId);
-            this._activeTargetMemberSets.delete(jobId);
             try {
                 repository.updateJob(jobId, {
                     status: "FAILED",

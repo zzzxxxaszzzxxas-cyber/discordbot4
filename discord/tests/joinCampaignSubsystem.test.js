@@ -1589,3 +1589,106 @@ test("P2 audit: candidate query skips tokens with refreshFailCount >= failMax ma
     assert.equal(result.candidates.length, 1);
     assert.equal(result.candidates[0].userId, "user_valid");
 });
+
+test("P2 audit: confirmAndStartCampaign fails closed when fresh ready count is 0", async () => {
+    const repo = database.repositories.joinCampaign;
+    const mode = modeRegistry.getMode("ALL_TO_TARGET");
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({
+            candidates: [{ userId: "u1", tokenField: "oauth" }],
+            hasMore: false
+        }),
+        getAccessToken: async () => ({ accessToken: "valid_token" })
+    };
+
+    // Stage session with preflight where target has 0 member candidates
+    const stageResult = await joinCampaignService.stageCampaign({
+        client: {
+            guilds: {
+                cache: new Map([
+                    ["123456789012345678", {
+                        id: "123456789012345678",
+                        name: "Target Server",
+                        memberCount: 1,
+                        members: {
+                            me: { permissions: { has: () => true } },
+                            fetch: async () => new Map()
+                        }
+                    }]
+                ])
+            }
+        },
+        repository: repo,
+        mode,
+        baseConfig: { targetGuildId: "123456789012345678" },
+        requestedAmount: "10",
+        tokenManager: mockTokenManager
+    });
+
+    assert.ok(stageResult.ok);
+    const stageId = stageResult.stageId;
+
+    // Simulate that by confirm-time, u1 has joined the target server (fresh fetch returns u1)
+    const mockClientWithU1 = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    memberCount: 1,
+                    members: {
+                        me: { permissions: { has: () => true } },
+                        fetch: async () => new Map([["u1", { id: "u1" }]])
+                    }
+                }]
+            ])
+        }
+    };
+
+    const confirmResult = await joinCampaignService.confirmAndStartCampaign({
+        stageId,
+        client: mockClientWithU1,
+        repository: repo,
+        tokenManager: mockTokenManager
+    });
+
+    assert.equal(confirmResult.ok, false);
+    assert.match(confirmResult.error, /ไม่พบสมาชิกที่พร้อมดึงเข้าเซิร์ฟเวอร์/);
+
+    const active = repo.findActiveRunningJob();
+    assert.equal(active, null);
+});
+
+test("P2 audit: JoinCampaignRepository countPendingItems supports status parameter and separates pending from processing", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "camp_count_test_" + Date.now();
+
+    repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 10,
+        selectedAmount: 5
+    });
+
+    repo.createItems(testJobId, [
+        { userId: "user_p1", tokenField: "oauth" },
+        { userId: "user_p2", tokenField: "oauth" },
+        { userId: "user_p3", tokenField: "oauth" }
+    ]);
+
+    // Claim one item so it becomes 'processing'
+    const claimed = repo.claimNextPendingItem(testJobId, 30000);
+    assert.ok(claimed);
+
+    // Default countPendingItems should count only 'pending' items (2 items)
+    const pendingOnly = repo.countPendingItems(testJobId);
+    assert.equal(pendingOnly, 2);
+
+    // countPendingItems with 'all' should count pending + processing (3 items)
+    const allActive = repo.countPendingItems(testJobId, "all");
+    assert.equal(allActive, 3);
+});
+

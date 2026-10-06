@@ -58,7 +58,7 @@ ${navBar("/join-campaign")}
         <div class="mini-stat"><span>ตรวจเช็กแล้ว</span><b id="processedUsers">0</b></div>
         <div class="mini-stat"><span>ลองใหม่ (Retry)</span><b id="retryCount">0</b></div>
         <div class="mini-stat"><span>Concurrency</span><b id="currentConcurrency">8</b></div>
-        <div class="mini-stat"><span>Throughput</span><b id="currentThroughput">0 /วิ</b></div>
+        <div class="mini-stat"><span>Throughput (เฉลี่ย)</span><b id="currentThroughput">0 /วิ</b></div>
     </div>
 
     <div id="liveProgressBarContainer" style="margin: 14px 0; display: none;">
@@ -87,10 +87,11 @@ ${navBar("/join-campaign")}
                     <th style="padding:10px 8px;">สถานะ</th>
                     <th style="padding:10px 8px;">เวลาเริ่ม</th>
                     <th style="padding:10px 8px;">เวลาเสร็จ</th>
+                    <th style="padding:10px 8px;">ระยะเวลา</th>
                 </tr>
             </thead>
             <tbody id="historyTableBody">
-                <tr><td colspan="7" style="padding:16px;text-align:center;color:var(--text3);">กำลังโหลดประวัติ...</td></tr>
+                <tr><td colspan="8" style="padding:16px;text-align:center;color:var(--text3);">กำลังโหลดประวัติ...</td></tr>
             </tbody>
         </table>
     </div>
@@ -190,7 +191,7 @@ function renderSummary(summary){
         'ตรวจเช็กแล้ว: '+(summary.processed_count || summary.processedCount || 0)+' คน',
         'ลองใหม่ (Retry): '+(summary.retry_count || summary.retryCount || 0)+' ครั้ง',
         'Concurrency: '+(summary.current_concurrency || summary.currentConcurrency || 8),
-        'Throughput: '+Number(tp).toFixed(1)+' คน/วินาที'
+        'Throughput (เฉลี่ย): '+Number(tp).toFixed(1)+' คน/วินาที'
     ];
     if(summary.error_summary || summary.lastError || summary.last_error){
         lines.push('', 'ข้อความบันทึก: '+(summary.error_summary || summary.lastError || summary.last_error));
@@ -199,11 +200,20 @@ function renderSummary(summary){
     if (logEl) logEl.innerHTML=lines.map(esc).join('<br>');
 }
 
+function fmtDuration(ms){
+    if(!ms || ms <= 0) return '-';
+    const s = Math.floor(ms / 1000);
+    if(s < 60) return s + ' วินาที';
+    const m = Math.floor(s / 60);
+    const remS = s % 60;
+    return m + ' นาที' + (remS > 0 ? ' ' + remS + ' วินาที' : '');
+}
+
 function renderHistory(history){
     const tbody = document.getElementById('historyTableBody');
     if(!tbody) return;
     if(!Array.isArray(history) || history.length === 0){
-        tbody.innerHTML = '<tr><td colspan="7" style="padding:16px;text-align:center;color:var(--text3);">ยังไม่มีประวัติการทำงาน</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--text3);">ยังไม่มีประวัติการทำงาน</td></tr>';
         return;
     }
     tbody.innerHTML = history.map(item => {
@@ -213,6 +223,8 @@ function renderHistory(history){
             completed: '#57f287',
             partial: '#fee75c',
             server_full: '#fee75c',
+            interrupted: '#f0b232',
+            stopping: '#fee75c',
             failed: '#ed4245',
             running: '#5865f2',
             stage: '#5865f2',
@@ -221,6 +233,7 @@ function renderHistory(history){
         const rawStatus = String(item.status || '').toLowerCase();
         const color = statusColors[rawStatus] || 'var(--text3)';
         const label = statusLabels[rawStatus] || item.status || '-';
+        const durationText = fmtDuration(item.duration_ms || item.durationMs);
         return '<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">' +
             '<td style="padding:8px;font-family:monospace;">' + esc(String(item.id || '').slice(0, 16)) + '</td>' +
             '<td style="padding:8px;">' + esc(item.mode || '-') + '</td>' +
@@ -229,6 +242,7 @@ function renderHistory(history){
             '<td style="padding:8px;"><span style="color:' + color + ';font-weight:600;">' + esc(label) + '</span></td>' +
             '<td style="padding:8px;color:var(--text3);">' + esc(start) + '</td>' +
             '<td style="padding:8px;color:var(--text3);">' + esc(finish) + '</td>' +
+            '<td style="padding:8px;color:var(--text3);">' + esc(durationText) + '</td>' +
         '</tr>';
     }).join('');
 }

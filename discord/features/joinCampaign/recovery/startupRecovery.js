@@ -66,6 +66,7 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
         }
 
         console.log(`[JoinCampaign] 🔄 ตรวจพบงานที่ค้างอยู่จากการรีสตาร์ต: ${interruptedJob.id} (สำเร็จแล้ว ${interruptedJob.joinedCount}/${interruptedJob.requestedAmount})`);
+        console.log(`[JoinCampaign] ℹ️ งานเดิมถูกกู้คืนแล้ว (Webhook URL ไม่ได้ถูกบันทึกลงฐานข้อมูลตามนโยบายความปลอดภัย จึงไม่สามารถส่งความคืบหน้าผ่าน Webhook เดิมได้)`);
 
         // 1. Release all leased items back to PENDING
         if (typeof repository.releaseExpiredLeases === "function") {

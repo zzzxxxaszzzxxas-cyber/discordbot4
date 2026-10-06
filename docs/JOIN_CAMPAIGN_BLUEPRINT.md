@@ -355,7 +355,7 @@ CREATE INDEX IF NOT EXISTS idx_join_items_claim ON join_campaign_items(campaign_
 2. เมื่อ worker ทำการ resume งานต่อ ระบบจะตรวจสอบสมาชิกปัจจุบันของ Target Guild (Live target query หรือ Discord API `Add Guild Member` รอบใหม่):
    - หากผู้ใช้เข้าเซิร์ฟเวอร์ไปแล้ว Discord จะตอบกลับ **204 No Content (Already Member)**
    - Worker จะตรวจจับสถานะ 204 และบันทึก item เป็น `already_member` ทันที โดย**ไม่เพิ่ม** `joined_count` ซ้ำสอง
-   - ระบบจะหยิบ candidate คนถัดไปมาประมวลผล เพื่อให้เข้าตาม Joined Quota ที่เหลืออยู่ได้อย่างแม่นยำ 100%
+    - ระบบจะหยิบ candidate คนถัดไปมาประมวลผล เพื่อให้เข้าตาม Joined Quota ที่เหลืออยู่ได้อย่างแม่นยำ
 
 ### 7.3 Boot Recovery & Master Switch Enforcement
 1. **Master Switch Gate (`JOIN_CAMPAIGN_ENABLED`)**:
@@ -369,6 +369,13 @@ CREATE INDEX IF NOT EXISTS idx_join_items_claim ON join_campaign_items(campaign_
    - จำกัดจำนวนครั้งการ retry เมื่อติด 429 ไม่เกิน `JOIN_CAMPAIGN_MAX_RATE_LIMIT_RETRIES` (ค่าเริ่มต้น 3 ครั้ง) หากเกินจะปรับสถานะเป็น `failed` (`rate_limited`) เพื่อให้ Campaign จบงานได้ตามปกติ ไม่ค้าง loop
 4. **Startup Recovery Failure Handling**:
    - หาก worker resume ล้มเหลว (เช่น Target Guild ถูกลบไประหว่างบอทดับ) `runStartupRecovery` จะบันทึกสถานะงานเป็น `FAILED` พร้อมบันทึก `lastError` และ `completedAt` และคืนค่า `recovered: false` ป้องกันงานค้างในสถานะ `RUNNING` ตลอดกาล
+5. **Fail-Closed Confirmation Freshness**:
+   - `confirmAndStartCampaign` ตรวจสอบสมาชิกสดจาก Discord REST API ทันทีก่อนเริ่มงาน
+   - หาก fetch สมาชิกล้มเหลว หรือไม่พบสมาชิกพร้อมดึง (`freshReadyCount === 0`) จะปฏิเสธการเริ่มงานและไม่สร้าง Job ลงฐานข้อมูล
+6. **Interruptible Shutdown (`_interruptibleSleep`)**:
+   - Worker รองรับสัญญาณ Graceful Shutdown ทันที แม้อยู่ระหว่าง sleep backoff 429 โดยปลุกตัวภายใน <100ms เพื่อบันทึกสถานะ `INTERRUPTED`
+7. **Quota vs Server Full Precedence**:
+   - เมื่อจำนวนสมาชิกที่ดึงได้ครบโควตา (`joinedCount >= requestedQuota`) สถานะงานจะถูกตัดสินเป็น `COMPLETED` เสมอ แม้จะมี concurrent task ได้รับ code 30005 ก็ตาม
 
 ---
 

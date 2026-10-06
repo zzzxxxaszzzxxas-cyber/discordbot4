@@ -52,7 +52,6 @@ function resolveJoinCampaignTarget(client, guildId, campaignConfig = joinCampaig
 function resolveJoinCampaignStartStatus(code) {
     switch (code) {
         case "CAMPAIGN_DISABLED":
-        case "CAMPAIGN_ALLOWLIST_REQUIRED":
             return 503;
         case "INVALID_GUILD_ID":
             return 400;

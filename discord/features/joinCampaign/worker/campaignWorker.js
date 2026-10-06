@@ -273,13 +273,12 @@ class CampaignWorker {
                 }
 
                 const { candidate, cursor } = nextItem.value || {};
+                if (cursor) candidateCursor = cursor;
                 if (!candidate) continue;
 
                 const userId = String(candidate.userId || candidate.discord?.userId || "").trim();
                 if (!userId || seenUsers.has(userId)) continue;
                 seenUsers.add(userId);
-
-                if (cursor) candidateCursor = cursor;
 
                 itemsToInsert.push({
                     userId,
@@ -331,7 +330,7 @@ class CampaignWorker {
                         await Promise.race(activeTasks);
                         continue;
                     }
-                    if (streamExhausted && (repository.countPendingItems ? repository.countPendingItems(job.id) === 0 : true)) {
+                    if (streamExhausted && (repository.countPendingItems ? repository.countPendingItems(job.id, "all") === 0 : true)) {
                         // Candidate pool is exhausted before meeting target quota
                         finalStatus = joinedCount > 0 ? "PARTIAL" : "FAILED";
                         if (joinedCount === 0 && !statusReason) {

@@ -306,11 +306,16 @@ class JoinCampaignRepository {
         return info.changes;
     }
 
-    countPendingItems(campaignId) {
-        const row = this.db.prepare(`
-            SELECT COUNT(*) as count FROM join_campaign_items
-            WHERE campaign_id = ? AND (status = 'pending' OR status = 'processing')
-        `).get(String(campaignId));
+    countPendingItems(campaignId, status = "pending") {
+        let sql = "SELECT COUNT(*) as count FROM join_campaign_items WHERE campaign_id = ?";
+        const params = [String(campaignId)];
+        if (status === "all" || status === "active") {
+            sql += " AND (status = 'pending' OR status = 'processing')";
+        } else if (status) {
+            sql += " AND status = ?";
+            params.push(String(status));
+        }
+        const row = this.db.prepare(sql).get(...params);
         return Number(row?.count) || 0;
     }
 
