@@ -15,7 +15,7 @@ class JoinCampaignRepository {
     createJob(data) {
         const now = Date.now();
         const targetStatus = String(data.status || "STAGE");
-        const isActiveStatus = ["RUNNING", "STAGE"].includes(targetStatus);
+        const isActiveStatus = ["RUNNING", "STAGE", "INTERRUPTED"].includes(targetStatus);
 
         const stmt = this.db.prepare(`
             INSERT INTO join_campaign_jobs (
@@ -184,36 +184,33 @@ class JoinCampaignRepository {
     }
 
     reconcileJobCounters(jobId) {
-        const counts = this.db.prepare(`
+        const stats = this.db.prepare(`
             SELECT 
-                status,
-                COUNT(*) as count
+                COUNT(CASE WHEN status = 'joined' THEN 1 END) as joined_count,
+                COUNT(CASE WHEN status = 'already_member' THEN 1 END) as already_count,
+                COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count,
+                COUNT(CASE WHEN processing_started_at IS NOT NULL OR status IN ('joined', 'already_member', 'failed') OR attempts > 0 THEN 1 END) as processed_count,
+                COALESCE(SUM(CASE WHEN attempts > 1 THEN attempts - 1 ELSE 0 END), 0) as retry_count
             FROM join_campaign_items
             WHERE campaign_id = ?
-            GROUP BY status
-        `).all(String(jobId));
+        `).get(String(jobId));
 
-        let joined = 0;
-        let already = 0;
-        let failed = 0;
-
-        for (const row of counts) {
-            if (row.status === "joined") joined = Number(row.count) || 0;
-            else if (row.status === "already_member") already = Number(row.count) || 0;
-            else if (row.status === "failed") failed = Number(row.count) || 0;
-        }
-
-        const processed = joined + already + failed;
+        const joined = Number(stats?.joined_count) || 0;
+        const already = Number(stats?.already_count) || 0;
+        const failed = Number(stats?.failed_count) || 0;
+        const processed = Number(stats?.processed_count) || 0;
+        const retries = Number(stats?.retry_count) || 0;
 
         this.db.prepare(`
             UPDATE join_campaign_jobs
-            SET joined_count = MAX(joined_count, ?),
-                already_count = MAX(already_count, ?),
-                failed_count = MAX(failed_count, ?),
-                processed_count = MAX(processed_count, ?),
+            SET joined_count = ?,
+                already_count = ?,
+                failed_count = ?,
+                processed_count = ?,
+                retry_count = MAX(retry_count, ?),
                 updated_at = ?
             WHERE id = ?
-        `).run(joined, already, failed, processed, Date.now(), String(jobId));
+        `).run(joined, already, failed, processed, retries, Date.now(), String(jobId));
 
         return this.findJobById(jobId);
     }
@@ -288,7 +285,11 @@ class JoinCampaignRepository {
 
         const updateStmt = this.db.prepare(`
             UPDATE join_campaign_items
-            SET status = 'processing', leased_until = ?, updated_at = ?
+            SET status = 'processing',
+                leased_until = ?,
+                processing_started_at = COALESCE(processing_started_at, ?),
+                attempts = CASE WHEN attempts = 0 THEN 1 ELSE attempts END,
+                updated_at = ?
             WHERE id = (
                 SELECT id FROM join_campaign_items
                 WHERE campaign_id = ? AND (
@@ -303,7 +304,7 @@ class JoinCampaignRepository {
         `);
 
         try {
-            const row = updateStmt.get(leaseUntil, now, String(campaignId), now, now);
+            const row = updateStmt.get(leaseUntil, now, now, String(campaignId), now, now);
             return row ? this._hydrateItem(row) : null;
         } catch (_) {
             const findStmt = this.db.prepare(`
@@ -321,9 +322,13 @@ class JoinCampaignRepository {
 
             this.db.prepare(`
                 UPDATE join_campaign_items
-                SET status = 'processing', leased_until = ?, updated_at = ?
+                SET status = 'processing',
+                    leased_until = ?,
+                    processing_started_at = COALESCE(processing_started_at, ?),
+                    attempts = CASE WHEN attempts = 0 THEN 1 ELSE attempts END,
+                    updated_at = ?
                 WHERE id = ?
-            `).run(leaseUntil, now, item.id);
+            `).run(leaseUntil, now, now, item.id);
 
             const row = this.db.prepare("SELECT * FROM join_campaign_items WHERE id = ?").get(item.id);
             return row ? this._hydrateItem(row) : null;
@@ -332,6 +337,20 @@ class JoinCampaignRepository {
 
     updateItemStatus(campaignId, userId, status, error = null) {
         const now = Date.now();
+        if (status === "pending") {
+            this.db.prepare(`
+                UPDATE join_campaign_items
+                SET status = 'pending',
+                    last_error = ?,
+                    leased_until = 0,
+                    processing_started_at = NULL,
+                    attempts = 0,
+                    completed_at = NULL,
+                    updated_at = ?
+                WHERE campaign_id = ? AND user_id = ?
+            `).run(error ? String(error) : null, now, String(campaignId), String(userId));
+            return;
+        }
         this.db.prepare(`
             UPDATE join_campaign_items
             SET status = ?, last_error = ?, leased_until = 0, completed_at = ?, updated_at = ?
@@ -351,12 +370,12 @@ class JoinCampaignRepository {
 
     renewItemLease(campaignId, userId, extensionMs = 60000) {
         const now = Date.now();
-        const leaseUntil = now + extensionMs;
+        const ext = Math.max(1000, Number(extensionMs) || 60000);
         const info = this.db.prepare(`
             UPDATE join_campaign_items
-            SET leased_until = ?, updated_at = ?
+            SET leased_until = MAX(COALESCE(leased_until, 0), ?) + ?, updated_at = ?
             WHERE campaign_id = ? AND user_id = ? AND status = 'processing'
-        `).run(leaseUntil, now, String(campaignId), String(userId));
+        `).run(now, ext, now, String(campaignId), String(userId));
         return info.changes > 0;
     }
 
@@ -393,6 +412,14 @@ class JoinCampaignRepository {
 
     getCompletedUserIds(campaignId) {
         return this.getTrackedUserIds(campaignId);
+    }
+
+    getProcessedUserIds(campaignId) {
+        const rows = this.db.prepare(`
+            SELECT user_id FROM join_campaign_items
+            WHERE campaign_id = ? AND (processing_started_at IS NOT NULL OR status IN ('joined', 'already_member', 'failed') OR attempts > 0)
+        `).all(String(campaignId));
+        return new Set(rows.map(r => r.user_id));
     }
 
     // --- Panel State Operations ---
@@ -501,6 +528,7 @@ class JoinCampaignRepository {
             attempts: row.attempts,
             lastError: row.last_error,
             leasedUntil: row.leased_until,
+            processingStartedAt: row.processing_started_at ?? null,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             completedAt: row.completed_at

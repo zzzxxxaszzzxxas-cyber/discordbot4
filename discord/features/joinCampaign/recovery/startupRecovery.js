@@ -27,6 +27,47 @@ function dispatchRecoveryAlert({ code, title, description, details = {} }) {
     } catch (_) {}
 }
 
+async function updatePanelRecoveryFailure({ client, repository, jobId, channelId, errorMsg, targetGuildName }) {
+    try {
+        if (!repository) return;
+        const panel = (channelId && repository.findPanelByChannelId)
+            ? repository.findPanelByChannelId(channelId)
+            : (jobId && repository.findPanelByActiveJobId ? repository.findPanelByActiveJobId(jobId) : null);
+        if (!panel) return;
+
+        const summaryText = `เกิดข้อผิดพลาดในการกู้คืนงาน: ${errorMsg}`;
+        const updatedPanel = {
+            ...panel,
+            activeJobId: null,
+            lastStatusSummary: summaryText
+        };
+
+        if (repository.savePanel) {
+            repository.savePanel(updatedPanel);
+        }
+
+        if (client && panel.channelId && panel.messageId) {
+            const channel = await client.channels?.fetch?.(panel.channelId).catch(() => null);
+            if (channel) {
+                const message = await channel.messages?.fetch?.(panel.messageId).catch(() => null);
+                if (message) {
+                    const { getMode } = require("../modes/modeRegistry");
+                    const { buildPanelPayload } = require("../ui/panelBuilder");
+                    const mode = getMode(panel.mode || "ALL_TO_TARGET");
+                    const payload = buildPanelPayload({
+                        mode,
+                        panelState: updatedPanel,
+                        readyCount: updatedPanel.lastReadyCount,
+                        liveJob: null,
+                        targetGuildName: targetGuildName || panel.targetGuildId || "เซิร์ฟเวอร์เป้าหมาย"
+                    });
+                    await message.edit(payload).catch(() => {});
+                }
+            }
+        }
+    } catch (_) {}
+}
+
 let activeRecoveryPromise = null;
 
 function runStartupRecovery({ client, repository, tokenManager, discord }) {
@@ -66,6 +107,14 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
                     status: "FAILED",
                     lastError: failReason,
                     completedAt: Date.now()
+                });
+                await updatePanelRecoveryFailure({
+                    client,
+                    repository,
+                    jobId: interruptedJob.id,
+                    channelId: interruptedJob.startedByChannelId,
+                    errorMsg: failReason,
+                    targetGuildName: interruptedJob.targetGuildName
                 });
                 dispatchRecoveryAlert({
                     code: "join_campaign.max_recovery_exceeded",
@@ -134,6 +183,14 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
                     lastError: failMsg,
                     completedAt: Date.now()
                 });
+                await updatePanelRecoveryFailure({
+                    client,
+                    repository,
+                    jobId: interruptedJob.id,
+                    channelId: interruptedJob.startedByChannelId,
+                    errorMsg: failMsg,
+                    targetGuildName: interruptedJob.targetGuildName
+                });
                 dispatchRecoveryAlert({
                     code: "join_campaign.recovery_target_missing",
                     title: "Join Campaign: เซิร์ฟเวอร์เป้าหมายไม่พร้อมใช้งานขณะกู้คืน",
@@ -154,6 +211,14 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
                     status: "FAILED",
                     lastError: failMsg,
                     completedAt: Date.now()
+                });
+                await updatePanelRecoveryFailure({
+                    client,
+                    repository,
+                    jobId: interruptedJob.id,
+                    channelId: interruptedJob.startedByChannelId,
+                    errorMsg: failMsg,
+                    targetGuildName: interruptedJob.targetGuildName
                 });
                 dispatchRecoveryAlert({
                     code: "join_campaign.recovery_member_fetch_failed",
@@ -185,10 +250,19 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
             }
         } catch (err) {
             console.error(`[JoinCampaign] ❌ ไม่สามารถกู้คืนงานเดิมได้:`, err.message);
+            const failMsg = `กู้คืนงานเดิมไม่สำเร็จ: ${err.message}`;
             repository.updateJob(interruptedJob.id, {
                 status: "FAILED",
-                lastError: `กู้คืนงานเดิมไม่สำเร็จ: ${err.message}`,
+                lastError: failMsg,
                 completedAt: Date.now()
+            });
+            await updatePanelRecoveryFailure({
+                client,
+                repository,
+                jobId: interruptedJob.id,
+                channelId: interruptedJob.startedByChannelId,
+                errorMsg: failMsg,
+                targetGuildName: interruptedJob.targetGuildName
             });
             dispatchRecoveryAlert({
                 code: "join_campaign.recovery_worker_start_failed",

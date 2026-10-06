@@ -2047,4 +2047,402 @@ test("P2 audit #27: runStartupRecovery prevents concurrent execution via activeR
     await campaignWorker.waitForCompletion();
 });
 
+test("P1 audit: Hard crash mid-processing before terminal outcome correctly recovers processedCount on restart", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "hard_crash_job_" + Date.now();
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 3,
+        selectedAmount: 3,
+        joinedCount: 0,
+        processedCount: 0
+    });
+
+    // Create 3 candidate items
+    repo.createItems(testJobId, [
+        { userId: "crash_user_1", tokenField: "oauth" },
+        { userId: "crash_user_2", tokenField: "oauth" },
+        { userId: "crash_user_3", tokenField: "oauth" }
+    ]);
+
+    // Simulate Item 1 completed normally
+    const item1 = repo.claimNextPendingItem(testJobId);
+    assert.ok(item1);
+    assert.equal(item1.userId, "crash_user_1");
+    repo.updateItemStatus(testJobId, "crash_user_1", "joined");
+    repo.updateJob(testJobId, { joinedCount: 1, processedCount: 1 });
+
+    // Simulate Item 2 claimed for processing, but process CRASHES before recordItemOutcome / checkpoint
+    const item2 = repo.claimNextPendingItem(testJobId);
+    assert.ok(item2);
+    assert.equal(item2.userId, "crash_user_2");
+    assert.ok(item2.processingStartedAt > 0, "processingStartedAt must be recorded in SQLite on claim");
+    assert.equal(item2.attempts, 1);
+    assert.equal(item2.status, "processing");
+
+    // At the moment of crash, job.processedCount is still 1 in SQLite, but item2 was claimed!
+    const jobBeforeRecovery = repo.findJobById(testJobId);
+    assert.equal(jobBeforeRecovery.processedCount, 1);
+
+    // Simulate Restart Recovery
+    const reconciled = repo.reconcileJobCounters(testJobId);
+    assert.ok(reconciled);
+    assert.equal(reconciled.joinedCount, 1);
+    assert.equal(reconciled.processedCount, 2, "reconcileJobCounters must count item2 because processing_started_at is set");
+
+    // Release leases back to pending for resumed worker
+    repo.releaseExpiredLeases(testJobId, true);
+    const item2Row = repo.db.prepare("SELECT * FROM join_campaign_items WHERE campaign_id = ? AND user_id = ?").get(testJobId, "crash_user_2");
+    assert.equal(item2Row.status, "pending");
+    assert.ok(item2Row.processing_started_at > 0, "processing_started_at must be preserved after lease release");
+
+    // Resumed worker picks up the campaign
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    members: { fetch: async () => new Map() }
+                }]
+            ])
+        }
+    };
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({ candidates: [], hasMore: false }),
+        getAccessToken: async () => ({ accessToken: "valid_token" })
+    };
+
+    const startResult = await campaignWorker.startWorker({
+        job: reconciled,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        targetMemberIds: new Set(["crash_user_1"]),
+        discord: { addMemberToGuild: async () => ({ ok: true, status: 201 }) }
+    });
+
+    await startResult.workerPromise;
+
+    const finalJob = repo.findJobById(testJobId);
+    assert.equal(finalJob.status, "COMPLETED");
+    assert.equal(finalJob.joinedCount, 3, "All 3 items should join (1 prior + 2 resumed)");
+    assert.equal(finalJob.processedCount, 3, "Processed count should accurately reflect 3 distinct users without duplicate counting");
+});
+
+test("P1 audit: confirmAndStartCampaign failure when startWorker throws marks job FAILED and clears panel activeJobId", async () => {
+    const repo = database.repositories.joinCampaign;
+    const channelId = "chan_fail_test_" + Date.now();
+    const messageId = "msg_fail_test_" + Date.now();
+
+    // Persist panel
+    repo.savePanel({
+        messageId,
+        channelId,
+        guildId: "123456789012345678",
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        activeJobId: null,
+        requestedAmount: 5,
+        lastReadyCount: 10,
+        lastStatusSummary: null
+    });
+
+    // Mock client with target guild and channel
+    let editedPayload = null;
+    const mockMessage = {
+        id: messageId,
+        edit: async (payload) => {
+            editedPayload = payload;
+            return mockMessage;
+        }
+    };
+    const mockChannel = {
+        id: channelId,
+        messages: {
+            fetch: async (id) => (id === messageId ? mockMessage : null)
+        }
+    };
+    const mockClient = {
+        channels: {
+            fetch: async (id) => (id === channelId ? mockChannel : null)
+        },
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    memberCount: 1,
+                    members: {
+                        me: { permissions: { has: () => true } },
+                        fetch: async () => new Map()
+                    }
+                }]
+            ])
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({
+            candidates: [{ userId: "u1", tokenField: "oauth" }],
+            hasMore: false
+        }),
+        getAccessToken: async () => ({ accessToken: "t" })
+    };
+
+    // Stage a campaign
+    const stageResult = await joinCampaignService.stageCampaign({
+        client: mockClient,
+        repository: repo,
+        mode: modeRegistry.getMode("ALL_TO_TARGET"),
+        baseConfig: { targetGuildId: "123456789012345678" },
+        requestedAmount: 5,
+        startedByUserId: "admin1",
+        channelId,
+        tokenManager: mockTokenManager
+    });
+    assert.equal(stageResult.ok, true);
+
+    // Mock startWorker to throw an error
+    const origStartWorker = campaignWorker.startWorker.bind(campaignWorker);
+    campaignWorker.startWorker = async () => {
+        throw new Error("Simulated worker start explosion");
+    };
+
+    try {
+        const confirmResult = await joinCampaignService.confirmAndStartCampaign({
+            stageId: stageResult.stageId,
+            client: mockClient,
+            repository: repo,
+            tokenManager: mockTokenManager
+        });
+
+        assert.equal(confirmResult.ok, false);
+        assert.match(confirmResult.error, /Simulated worker start explosion/);
+
+        // Verify SQLite panel state: activeJobId must NOT point to the failed job!
+        const updatedPanel = repo.findPanelByChannelId(channelId);
+        assert.ok(updatedPanel);
+        assert.equal(updatedPanel.activeJobId, null, "Panel activeJobId must be cleared to null on worker start failure");
+        assert.match(updatedPanel.lastStatusSummary, /เกิดข้อผิดพลาด/);
+
+        // Verify Discord message was edited with error payload
+        assert.ok(editedPayload, "Panel message on Discord must be edited to show error");
+    } finally {
+        campaignWorker.startWorker = origStartWorker;
+    }
+});
+
+test("P2 audit: Real lease heartbeat renewal extends leased_until and prevents concurrent claim", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "heartbeat_test_" + Date.now();
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 1,
+        selectedAmount: 1
+    });
+
+    repo.createItems(testJobId, [{ userId: "hb_user", tokenField: "oauth" }]);
+
+    let initialLeaseUntil = 0;
+    let renewedLeaseUntil = 0;
+    let concurrentClaimResult = "UNTESTED";
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    members: { fetch: async () => new Map() }
+                }]
+            ])
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({
+            candidates: [{ userId: "hb_user", tokenField: "oauth" }],
+            hasMore: false
+        }),
+        getAccessToken: async () => ({ accessToken: "t" })
+    };
+
+    // Spy on claimNextPendingItem to capture initialLeaseUntil
+    const origClaim = repo.claimNextPendingItem.bind(repo);
+    repo.claimNextPendingItem = (...args) => {
+        const item = origClaim(...args);
+        if (item && item.userId === "hb_user" && initialLeaseUntil === 0) {
+            initialLeaseUntil = item.leasedUntil;
+        }
+        return item;
+    };
+
+    // Spy on renewItemLease
+    const origRenew = repo.renewItemLease.bind(repo);
+    let renewPromiseResolve;
+    const renewCalled = new Promise(resolve => { renewPromiseResolve = resolve; });
+
+    repo.renewItemLease = (jId, uId, extMs) => {
+        const res = origRenew(jId, uId, extMs);
+        const item = repo.db.prepare("SELECT leased_until FROM join_campaign_items WHERE campaign_id = ? AND user_id = ?").get(jId, uId);
+        renewedLeaseUntil = item.leased_until;
+        renewPromiseResolve();
+        return res;
+    };
+
+    // Override setInterval in worker task so heartbeat fires quickly in test
+    const origSetInterval = global.setInterval;
+    global.setInterval = (fn, _ms) => {
+        return origSetInterval(fn, 10); // fire every 10ms instead of 15s for fast test
+    };
+
+    try {
+        const startResult = await campaignWorker.startWorker({
+            job,
+            client: mockClient,
+            repository: repo,
+            tokenManager: mockTokenManager,
+            targetMemberIds: new Set(),
+            discord: {
+                addMemberToGuild: async () => {
+                    // Wait for heartbeat renew to trigger
+                    await renewCalled;
+
+                    // Concurrently attempt to claim item while heartbeat is renewing
+                    const claim = repo.claimNextPendingItem(testJobId);
+                    concurrentClaimResult = claim; // should be null!
+
+                    return { ok: true, status: 201 };
+                }
+            }
+        });
+
+        await startResult.workerPromise;
+
+        assert.ok(initialLeaseUntil > 0, "initialLeaseUntil must be captured on claim");
+        assert.ok(renewedLeaseUntil > initialLeaseUntil, "Heartbeat must extend leased_until");
+        assert.strictEqual(concurrentClaimResult, null, "Concurrent worker must NOT be able to claim item while heartbeat lease is active");
+    } finally {
+        global.setInterval = origSetInterval;
+        repo.renewItemLease = origRenew;
+        repo.claimNextPendingItem = origClaim;
+    }
+});
+
+test("P2 audit: handleJoinPanelCommand rejects when active job has INTERRUPTED status", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "camp_interrupted_lock_" + Date.now();
+
+    repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "INTERRUPTED",
+        requestedAmount: 10,
+        selectedAmount: 5
+    });
+
+    let replyData = null;
+    const mockInteraction = {
+        guild: { id: "123456789012345678" },
+        user: { id: "123456789012345678" },
+        channelId: "chan_active_interrupted",
+        options: {
+            getString: () => null
+        },
+        reply: async (data) => {
+            replyData = data;
+            return data;
+        }
+    };
+
+    process.env.OWNER_ID = "123456789012345678";
+
+    await handleJoinPanelCommand(mockInteraction, {});
+
+    assert.ok(replyData, "Reply must be sent");
+    assert.equal(replyData.ephemeral, true);
+    assert.match(replyData.content, /กำลังมีงานดึงสมาชิก.*INTERRUPTED/);
+});
+
+test("P2 audit: stopCurrentWorker aborts in-flight task via AbortSignal cleanly", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "abort_test_" + Date.now();
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 5,
+        selectedAmount: 5
+    });
+
+    repo.createItems(testJobId, [{ userId: "u_abort", tokenField: "oauth" }]);
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Target Server",
+                    members: { fetch: async () => new Map() }
+                }]
+            ])
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({ candidates: [], hasMore: false }),
+        getAccessToken: async () => ({ accessToken: "valid_token" })
+    };
+
+    let signalObserved = null;
+    let taskAborted = false;
+
+    const startResult = await campaignWorker.startWorker({
+        job,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        targetMemberIds: new Set(),
+        discord: {
+            addMemberToGuild: async (_gId, _uId, _tok, opts) => {
+                signalObserved = opts?.signal;
+                assert.ok(signalObserved, "AbortSignal must be passed to addMemberToGuild");
+
+                return new Promise((resolve, reject) => {
+                    opts.signal.addEventListener("abort", () => {
+                        taskAborted = true;
+                        const err = new Error("The operation was aborted");
+                        err.name = "AbortError";
+                        reject(err);
+                    });
+                });
+            }
+        }
+    });
+
+    // Give worker microtasks to enter addMemberToGuild
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Call stopCurrentWorker while task is in flight
+    campaignWorker.stopCurrentWorker();
+
+    await startResult.workerPromise;
+
+    assert.equal(taskAborted, true, "In-flight task must observe abort signal event");
+    const updatedJob = repo.findJobById(testJobId);
+    assert.equal(updatedJob.status, "INTERRUPTED", "Stopping worker must transition job to INTERRUPTED");
+});
+
 

@@ -42,9 +42,9 @@ async function handleJoinPanelCommand(interaction, client) {
 
     const repository = database.repositories.joinCampaign;
     const activeJob = repository.findActiveRunningJob ? repository.findActiveRunningJob() : null;
-    if (activeJob && ["RUNNING", "STAGE"].includes(activeJob.status)) {
+    if (activeJob && ["RUNNING", "STAGE", "INTERRUPTED"].includes(activeJob.status)) {
         return interaction.reply({
-            content: `> ${emoji.alert} กำลังมีงานดึงสมาชิกทำงานอยู่ในระบบ (\`${activeJob.id}\`) กรุณารอให้งานเดิมเสร็จสิ้นก่อนสร้างแผงควบคุมใหม่ครับ`,
+            content: `> ${emoji.alert} กำลังมีงานดึงสมาชิกทำงานอยู่ในระบบ (\`${activeJob.id}\` สถานะ ${activeJob.status}) กรุณารอให้งานเดิมเสร็จสิ้นหรือกู้คืนก่อนสร้างแผงควบคุมใหม่ครับ`,
             ephemeral: true
         });
     }

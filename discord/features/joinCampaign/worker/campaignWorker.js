@@ -45,6 +45,7 @@ class CampaignWorker {
         this._currentJobId = null;
         this._isStopping = false;
         this._wakeUpResolvers = new Set();
+        this._abortController = null;
     }
 
     get isRunning() {
@@ -57,6 +58,9 @@ class CampaignWorker {
 
     stopCurrentWorker() {
         this._isStopping = true;
+        if (this._abortController) {
+            try { this._abortController.abort(); } catch (_) {}
+        }
         for (const wakeUp of this._wakeUpResolvers) {
             try { wakeUp(); } catch (_) {}
         }
@@ -102,6 +106,7 @@ class CampaignWorker {
 
         this._currentJobId = job.id;
         this._isStopping = false;
+        this._abortController = new AbortController();
         this._wakeUpResolvers.clear();
 
         this._activeWorkerPromise = this._executeLoop({
@@ -115,6 +120,7 @@ class CampaignWorker {
         }).finally(() => {
             this._activeWorkerPromise = null;
             this._currentJobId = null;
+            this._abortController = null;
         });
 
         return { ok: true, jobId: job.id, workerPromise: this._activeWorkerPromise };
@@ -162,7 +168,10 @@ class CampaignWorker {
         let joinedCount = Number(job.joinedCount) || 0;
         let alreadyCount = Number(job.alreadyCount) || 0;
         let failedCount = Number(job.failedCount) || 0;
-        let processedCount = Number(job.processedCount) || 0;
+        const processedUserIds = repository.getProcessedUserIds
+            ? repository.getProcessedUserIds(job.id)
+            : new Set();
+        let processedCount = Math.max(Number(job.processedCount) || 0, processedUserIds.size);
         let retryCount = Number(job.retryCount) || 0;
 
         // Distinct retry trackers to avoid 5xx competing with 429 budget
@@ -465,8 +474,9 @@ class CampaignWorker {
                     try {
                         const userId = item.userId;
                         // processedCount reflects distinct candidate users processed
-                        if (Number(item.attempts || 0) === 0) {
-                            processedCount++;
+                        if (!processedUserIds.has(userId)) {
+                            processedUserIds.add(userId);
+                            processedCount = processedUserIds.size;
                         }
 
                         // STEP 1: Pre-filter against current Target Membership
@@ -477,6 +487,8 @@ class CampaignWorker {
 
                         // Quota safeguard before executing external work
                         if (joinedCount >= requestedQuota) {
+                            processedUserIds.delete(userId);
+                            processedCount = processedUserIds.size;
                             await recordItemOutcome({ userId, status: "requeue_pending" });
                             return;
                         }
@@ -497,6 +509,8 @@ class CampaignWorker {
 
                         // Final check on quota before calling Discord API
                         if (joinedCount >= requestedQuota) {
+                            processedUserIds.delete(userId);
+                            processedCount = processedUserIds.size;
                             await recordItemOutcome({ userId, status: "requeue_pending" });
                             return;
                         }
@@ -504,9 +518,17 @@ class CampaignWorker {
                         // STEP 3: Call Discord REST API with callerManagedRetry so worker owns backoff
                         let res;
                         try {
-                            res = await discord.addMemberToGuild(targetGuildId, userId, accessToken, { callerManagedRetry: true });
+                            res = await discord.addMemberToGuild(targetGuildId, userId, accessToken, {
+                                callerManagedRetry: true,
+                                signal: this._abortController?.signal
+                            });
                         } catch (err) {
                             res = { ok: false, status: 500, error: err };
+                        }
+
+                        if (this._isStopping && (res?.error?.name === "AbortError" || this._abortController?.signal?.aborted)) {
+                            // Interrupted by shutdown
+                            return;
                         }
 
                         // STEP 4: Handle response & adapt concurrency

@@ -6,10 +6,51 @@ const { runPreflight, getLiveTargetMemberIds } = require("./preflightService");
 const { countEligibleCandidates } = require("./candidateQueryService");
 const oauthTokenManager = require("../../../core/oauthTokenManager");
 const { buildPreflightConfirmationPayload } = require("../ui/confirmationBuilder");
+const { buildPanelPayload } = require("../ui/panelBuilder");
 const campaignWorker = require("../worker/campaignWorker");
 const { getMode } = require("../modes/modeRegistry");
 
 const stagedSessions = new Map();
+
+async function updatePanelFailureState({ client, repository, channelId, jobId, errorMsg, mode, targetGuildName, readyCount }) {
+    try {
+        if (!repository) return;
+        const panel = (channelId && repository.findPanelByChannelId)
+            ? repository.findPanelByChannelId(channelId)
+            : (jobId && repository.findPanelByActiveJobId ? repository.findPanelByActiveJobId(jobId) : null);
+        if (!panel) return;
+
+        const summaryText = `เกิดข้อผิดพลาด: ${errorMsg}`;
+        const updatedPanel = {
+            ...panel,
+            activeJobId: null,
+            lastStatusSummary: summaryText,
+            lastReadyCount: readyCount ?? panel.lastReadyCount
+        };
+
+        if (repository.savePanel) {
+            repository.savePanel(updatedPanel);
+        }
+
+        if (client && panel.channelId && panel.messageId) {
+            const channel = await client.channels?.fetch?.(panel.channelId).catch(() => null);
+            if (channel) {
+                const message = await channel.messages?.fetch?.(panel.messageId).catch(() => null);
+                if (message) {
+                    const resolvedMode = typeof mode === "string" ? getMode(mode) : mode;
+                    const payload = buildPanelPayload({
+                        mode: resolvedMode,
+                        panelState: updatedPanel,
+                        readyCount: updatedPanel.lastReadyCount,
+                        liveJob: null,
+                        targetGuildName: targetGuildName || "เซิร์ฟเวอร์เป้าหมาย"
+                    });
+                    await message.edit(payload).catch(() => {});
+                }
+            }
+        }
+    } catch (_) {}
+}
 
 class JoinCampaignService {
     constructor() {}
@@ -230,7 +271,7 @@ class JoinCampaignService {
             });
 
             if (startResult?.workerPromise) {
-                startResult.workerPromise.catch((loopErr) => {
+                startResult.workerPromise.catch(async (loopErr) => {
                     const errorMsg = loopErr?.message || "Worker loop terminated unexpectedly";
                     try {
                         repository.updateJob(jobId, {
@@ -238,20 +279,41 @@ class JoinCampaignService {
                             lastError: errorMsg,
                             completedAt: Date.now()
                         });
+                        await updatePanelFailureState({
+                            client,
+                            repository,
+                            channelId: session.channelId,
+                            jobId,
+                            errorMsg,
+                            mode,
+                            targetGuildName: preflight.targetGuildName,
+                            readyCount: freshReadyCount
+                        });
                     } catch (_) {}
                 });
             }
         } catch (err) {
+            const errorMsg = err?.message || "ไม่สามารถเริ่มต้น Worker ได้";
             try {
                 repository.updateJob(jobId, {
                     status: "FAILED",
-                    lastError: err?.message || "ไม่สามารถเริ่มต้น Worker ได้",
+                    lastError: errorMsg,
                     completedAt: Date.now()
+                });
+                await updatePanelFailureState({
+                    client,
+                    repository,
+                    channelId: session.channelId,
+                    jobId,
+                    errorMsg,
+                    mode,
+                    targetGuildName: preflight.targetGuildName,
+                    readyCount: freshReadyCount
                 });
             } catch (_) {}
             return {
                 ok: false,
-                error: `ไม่สามารถเริ่มงานได้: ${err?.message || "เกิดข้อผิดพลาดในการเริ่มต้นระบบทำงาน"}`
+                error: `ไม่สามารถเริ่มงานได้: ${errorMsg}`
             };
         }
 

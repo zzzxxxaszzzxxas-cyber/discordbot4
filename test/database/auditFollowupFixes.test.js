@@ -309,17 +309,17 @@ describe("Audit Follow-up Architecture & Invariants Suite", () => {
     });
 
     describe("8. Schema Migration user_version Lineage", () => {
-        test("SQLite schema migration applies 001-008 and sets PRAGMA user_version = 8", () => {
+        test("SQLite schema migration applies 001-009 and sets PRAGMA user_version = 9", () => {
             const versionDb = new Database(":memory:");
             const results = runMigrations(versionDb);
 
-            assert.equal(results.currentVersion, 8);
+            assert.equal(results.currentVersion, 9);
             const userVersion = versionDb.pragma("user_version", { simple: true });
-            assert.equal(userVersion, 8, "PRAGMA user_version must be exactly 8");
+            assert.equal(userVersion, 9, "PRAGMA user_version must be exactly 9");
 
-            // Verify all 8 migrations recorded in schema_migrations
+            // Verify all 9 migrations recorded in schema_migrations
             const rows = versionDb.prepare("SELECT migration_id, version FROM schema_migrations ORDER BY version ASC").all();
-            assert.equal(rows.length, 8);
+            assert.equal(rows.length, 9);
             assert.equal(rows[0].migration_id, "001_initial_core.sql");
             assert.equal(rows[1].migration_id, "002_history_events.sql");
             assert.equal(rows[2].migration_id, "003_cache_subsystem.sql");
@@ -327,6 +327,8 @@ describe("Audit Follow-up Architecture & Invariants Suite", () => {
             assert.equal(rows[4].migration_id, "005_join_campaign.sql");
             assert.equal(rows[5].migration_id, "006_join_campaign_hardening.sql");
             assert.equal(rows[6].migration_id, "007_join_campaign_clean_schema.sql");
+            assert.equal(rows[7].migration_id, "008_join_campaign_channel_persistence.sql");
+            assert.equal(rows[8].migration_id, "009_join_campaign_crash_consistency.sql");
 
             versionDb.close();
         });

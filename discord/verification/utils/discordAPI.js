@@ -990,7 +990,8 @@ async function addMemberToGuild(guildId, userId, accessToken, options = {}) {
             headers,
             body: JSON.stringify(bodyObj),
             retries,
-            timeoutMs: options?.timeoutMs || 10000
+            timeoutMs: options?.timeoutMs || 10000,
+            signal: options?.signal
         });
     } catch (err) {
         if (callerManaged) {
