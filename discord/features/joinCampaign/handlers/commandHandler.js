@@ -41,6 +41,14 @@ async function handleJoinPanelCommand(interaction, client) {
     }
 
     const repository = database.repositories.joinCampaign;
+    const activeJob = repository.findActiveRunningJob ? repository.findActiveRunningJob() : null;
+    if (activeJob && ["RUNNING", "STAGE"].includes(activeJob.status)) {
+        return interaction.reply({
+            content: `> ${emoji.alert} กำลังมีงานดึงสมาชิกทำงานอยู่ในระบบ (\`${activeJob.id}\`) กรุณารอให้งานเดิมเสร็จสิ้นก่อนสร้างแผงควบคุมใหม่ครับ`,
+            ephemeral: true
+        });
+    }
+
     const targetGuildOption = interaction.options.getString("target_guild")?.trim();
     const sourceGuildOption = interaction.options.getString("source_guild")?.trim();
 

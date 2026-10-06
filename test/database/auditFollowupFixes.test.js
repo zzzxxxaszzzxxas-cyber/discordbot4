@@ -309,17 +309,17 @@ describe("Audit Follow-up Architecture & Invariants Suite", () => {
     });
 
     describe("8. Schema Migration user_version Lineage", () => {
-        test("SQLite schema migration applies 001-004 and sets PRAGMA user_version = 4", () => {
+        test("SQLite schema migration applies 001-008 and sets PRAGMA user_version = 8", () => {
             const versionDb = new Database(":memory:");
             const results = runMigrations(versionDb);
 
-            assert.equal(results.currentVersion, 7);
+            assert.equal(results.currentVersion, 8);
             const userVersion = versionDb.pragma("user_version", { simple: true });
-            assert.equal(userVersion, 7, "PRAGMA user_version must be exactly 7");
+            assert.equal(userVersion, 8, "PRAGMA user_version must be exactly 8");
 
-            // Verify all 7 migrations recorded in schema_migrations
+            // Verify all 8 migrations recorded in schema_migrations
             const rows = versionDb.prepare("SELECT migration_id, version FROM schema_migrations ORDER BY version ASC").all();
-            assert.equal(rows.length, 7);
+            assert.equal(rows.length, 8);
             assert.equal(rows[0].migration_id, "001_initial_core.sql");
             assert.equal(rows[1].migration_id, "002_history_events.sql");
             assert.equal(rows[2].migration_id, "003_cache_subsystem.sql");

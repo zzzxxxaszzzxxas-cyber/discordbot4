@@ -4,12 +4,26 @@ const https = require("node:https");
 const { URL } = require("node:url");
 const emoji = require("../ui/emojis");
 
-const DISCORD_WEBHOOK_PATTERN = /^https:\/\/(?:[a-zA-Z0-9-]+\.)?discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/[\w-]+$/;
+const DISCORD_WEBHOOK_HOSTS = new Set([
+    "discord.com",
+    "www.discord.com",
+    "discordapp.com",
+    "www.discordapp.com",
+    "canary.discord.com",
+    "ptb.discord.com"
+]);
 
 function isValidDiscordWebhookUrl(url) {
     if (!url || typeof url !== "string") return false;
-    const trimmed = url.trim();
-    return DISCORD_WEBHOOK_PATTERN.test(trimmed);
+    try {
+        const parsed = new URL(url.trim());
+        if (parsed.protocol !== "https:") return false;
+        if (!DISCORD_WEBHOOK_HOSTS.has(parsed.hostname.toLowerCase())) return false;
+        if (parsed.username || parsed.password) return false;
+        return /^\/api(?:\/v\d+)?\/webhooks\/\d{17,22}\/[\w-]+$/i.test(parsed.pathname);
+    } catch {
+        return false;
+    }
 }
 
 function formatDurationThai(ms) {
@@ -146,7 +160,12 @@ async function sendFinalSummaryEmbed({
     let description = `ดำเนินการดึงสมาชิกเข้าสู่ **${targetGuildName || targetGuildId}** ครบตามเป้าหมายเรียบร้อยแล้วครับ`;
     let statusLabel = "สำเร็จครบตามเป้าหมาย";
 
-    if (finalStatus === "PARTIAL") {
+    if (finalStatus === "INTERRUPTED") {
+        color = 0x5865F2; // Blurple
+        title = `${emoji.refresh} รายงานสถานะการดึงสมาชิก (หยุดชั่วคราวเพื่อรีสตาร์ต)`;
+        description = `ระบบหยุดทำงานชั่วคราวเนื่องจากบอทปิดระบบ (Graceful Shutdown) และจะกลับมาทำงานต่ออัตโนมัติเมื่อระบบเริ่มใหม่`;
+        statusLabel = "หยุดชั่วคราว (รอทำต่ออัตโนมัติ)";
+    } else if (finalStatus === "PARTIAL") {
         color = 0xFEE75C; // Yellow
         title = `${emoji.boost} สรุปผลการดึงสมาชิกเข้าเซิร์ฟเวอร์ (เสร็จสิ้นบางส่วน)`;
         description = `ดำเนินการดึงสมาชิกเข้าสู่ **${targetGuildName || targetGuildId}** เรียบร้อยแล้ว (สมาชิกที่พร้อมดึงในระบบหมดแล้ว)`;

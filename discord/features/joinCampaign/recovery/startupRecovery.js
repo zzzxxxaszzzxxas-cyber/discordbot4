@@ -27,51 +27,88 @@ function dispatchRecoveryAlert({ code, title, description, details = {} }) {
     } catch (_) {}
 }
 
-async function runStartupRecovery({ client, repository, tokenManager, discord }) {
+let activeRecoveryPromise = null;
+
+function runStartupRecovery({ client, repository, tokenManager, discord }) {
     const config = getJoinCampaignConfig();
     if (!config.enabled) {
-        return { recovered: false, reason: "disabled_by_master_switch" };
+        return Promise.resolve({ recovered: false, reason: "disabled_by_master_switch" });
     }
 
     if (!repository || typeof repository.findActiveRunningJob !== "function") {
-        return { recovered: false, reason: "no_repository" };
+        return Promise.resolve({ recovered: false, reason: "no_repository" });
     }
 
-    try {
-        const interruptedJob = repository.findActiveRunningJob();
-        if (!interruptedJob) {
-            return { recovered: false, reason: "no_interrupted_jobs" };
-        }
+    if (activeRecoveryPromise) {
+        return activeRecoveryPromise;
+    }
 
-        const currentRecoveryCount = interruptedJob.recoveryCount || interruptedJob.recovery_count || 0;
-        if (currentRecoveryCount >= MAX_RECOVERY_ATTEMPTS) {
-            const failReason = `กู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้ง`;
-            console.warn(`[JoinCampaign] ⚠️ งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด (${MAX_RECOVERY_ATTEMPTS} ครั้ง) ยกเลิกการกู้คืนเพื่อความปลอดภัย`);
-            repository.updateJob(interruptedJob.id, {
-                status: "FAILED",
-                lastError: failReason,
-                completedAt: Date.now()
-            });
-            dispatchRecoveryAlert({
-                code: "join_campaign.max_recovery_exceeded",
-                title: "Join Campaign: การกู้คืนล้มเหลวเกินกำหนด",
-                description: `งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้งและถูกยกเลิก`,
-                details: {
-                    campaignId: interruptedJob.id,
-                    targetGuildId: interruptedJob.targetGuildId,
-                    recoveryAttempts: currentRecoveryCount
+    activeRecoveryPromise = (async () => {
+        try {
+            const interruptedJob = repository.findActiveRunningJob();
+            if (!interruptedJob) {
+                return { recovered: false, reason: "no_interrupted_jobs" };
+            }
+
+            // Atomic claim on interrupted job to prevent concurrent recovery execution
+            if (typeof repository.claimInterruptedJob === "function" && interruptedJob.status === "INTERRUPTED") {
+                const claimed = repository.claimInterruptedJob(interruptedJob.id);
+                if (!claimed) {
+                    return { recovered: false, reason: "job_already_claimed" };
                 }
-            });
-            return { recovered: false, reason: "max_recovery_exceeded" };
-        }
+            }
 
-        console.log(`[JoinCampaign] 🔄 ตรวจพบงานที่ค้างอยู่จากการรีสตาร์ต: ${interruptedJob.id} (สำเร็จแล้ว ${interruptedJob.joinedCount}/${interruptedJob.requestedAmount})`);
-        console.log(`[JoinCampaign] ℹ️ งานเดิมถูกกู้คืนแล้ว (Webhook URL ไม่ได้ถูกบันทึกลงฐานข้อมูลตามนโยบายความปลอดภัย จึงไม่สามารถส่งความคืบหน้าผ่าน Webhook เดิมได้)`);
+            const currentRecoveryCount = interruptedJob.recoveryCount || interruptedJob.recovery_count || 0;
+            if (currentRecoveryCount >= MAX_RECOVERY_ATTEMPTS) {
+                const failReason = `กู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้ง`;
+                console.warn(`[JoinCampaign] ⚠️ งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด (${MAX_RECOVERY_ATTEMPTS} ครั้ง) ยกเลิกการกู้คืนเพื่อความปลอดภัย`);
+                repository.updateJob(interruptedJob.id, {
+                    status: "FAILED",
+                    lastError: failReason,
+                    completedAt: Date.now()
+                });
+                dispatchRecoveryAlert({
+                    code: "join_campaign.max_recovery_exceeded",
+                    title: "Join Campaign: การกู้คืนล้มเหลวเกินกำหนด",
+                    description: `งาน ${interruptedJob.id} ถูกกู้คืนเกินขีดจำกัด ${MAX_RECOVERY_ATTEMPTS} ครั้งและถูกยกเลิก`,
+                    details: {
+                        campaignId: interruptedJob.id,
+                        targetGuildId: interruptedJob.targetGuildId,
+                        recoveryAttempts: currentRecoveryCount
+                    }
+                });
+                return { recovered: false, reason: "max_recovery_exceeded" };
+            }
 
-        // 1. Release all leased items back to PENDING
-        if (typeof repository.releaseExpiredLeases === "function") {
-            repository.releaseExpiredLeases(interruptedJob.id, true);
-        }
+            // Reconcile job counters with actual item status records to guarantee crash-consistency (P1 #1)
+            if (typeof repository.reconcileJobCounters === "function") {
+                const reconciled = repository.reconcileJobCounters(interruptedJob.id);
+                if (reconciled) {
+                    interruptedJob.joinedCount = reconciled.joinedCount;
+                    interruptedJob.alreadyCount = reconciled.alreadyCount;
+                    interruptedJob.failedCount = reconciled.failedCount;
+                    interruptedJob.processedCount = reconciled.processedCount;
+                }
+            }
+
+            // Reconnect panel channel ID if not set directly on job (P1 #3)
+            if (!interruptedJob.startedByChannelId && typeof repository.findPanelByActiveJobId === "function") {
+                const associatedPanel = repository.findPanelByActiveJobId(interruptedJob.id);
+                if (associatedPanel?.channelId) {
+                    interruptedJob.startedByChannelId = associatedPanel.channelId;
+                    try {
+                        repository.updateJob(interruptedJob.id, { startedByChannelId: associatedPanel.channelId });
+                    } catch (_) {}
+                }
+            }
+
+            console.log(`[JoinCampaign] 🔄 ตรวจพบงานที่ค้างอยู่จากการรีสตาร์ต: ${interruptedJob.id} (สำเร็จแล้ว ${interruptedJob.joinedCount}/${interruptedJob.requestedAmount})`);
+            console.log(`[JoinCampaign] ℹ️ งานเดิมถูกกู้คืนแล้ว (Webhook URL ไม่ได้ถูกบันทึกลงฐานข้อมูลตามนโยบายความปลอดภัย จึงไม่สามารถส่งความคืบหน้าผ่าน Webhook เดิมได้)`);
+
+            // 1. Release all leased items back to PENDING
+            if (typeof repository.releaseExpiredLeases === "function") {
+                repository.releaseExpiredLeases(interruptedJob.id, true);
+            }
 
         // 2. Increment recovery count
         const nextRecoveryCount = currentRecoveryCount + 1;
@@ -166,15 +203,20 @@ async function runStartupRecovery({ client, repository, tokenManager, discord })
         }
 
         return { recovered: true, jobId: interruptedJob.id, workerPromise };
-    } catch (err) {
-        console.error(`[JoinCampaign] ❌ เกิดข้อผิดพลาดในการตรวจสอบงานค้าง:`, err.message);
-        dispatchRecoveryAlert({
-            code: "join_campaign.recovery_error",
-            title: "Join Campaign: เกิดข้อผิดพลาดร้ายแรงขณะกู้คืน",
-            description: err.message
-        });
-        return { recovered: false, error: err.message };
-    }
+        } catch (err) {
+            console.error(`[JoinCampaign] ❌ เกิดข้อผิดพลาดในการตรวจสอบงานค้าง:`, err.message);
+            dispatchRecoveryAlert({
+                code: "join_campaign.recovery_error",
+                title: "Join Campaign: เกิดข้อผิดพลาดร้ายแรงขณะกู้คืน",
+                description: err.message
+            });
+            return { recovered: false, error: err.message };
+        }
+    })().finally(() => {
+        activeRecoveryPromise = null;
+    });
+
+    return activeRecoveryPromise;
 }
 
 module.exports = {

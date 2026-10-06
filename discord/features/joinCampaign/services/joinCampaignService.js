@@ -187,6 +187,7 @@ class JoinCampaignService {
                 candidateCursor: null,
                 lastError: null,
                 startedByUserId: session.startedByUserId,
+                startedByChannelId: session.channelId,
                 createdAt: Date.now(),
                 updatedAt: Date.now()
             });

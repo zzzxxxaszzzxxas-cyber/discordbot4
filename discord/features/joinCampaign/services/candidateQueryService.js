@@ -30,18 +30,22 @@ async function* streamCandidates({
             seenUsers: tracker
         });
 
-        if (typeof onPage === "function") {
-            try { onPage(page); } catch (_) {}
-        }
-
         const candidates = page?.candidates !== undefined ? page.candidates : (Array.isArray(page) ? page : []);
+        const nextCursor = page?.nextCursor ?? (candidates.length > 0 && (candidates[candidates.length - 1]?._id || candidates[candidates.length - 1]?.recordId) ? String(candidates[candidates.length - 1]._id || candidates[candidates.length - 1].recordId) : null);
+
+        if (typeof onPage === "function") {
+            try {
+                const pagePayload = (page && typeof page === "object")
+                    ? Object.assign({}, page, { nextCursor, candidates, page })
+                    : { nextCursor, candidates, page };
+                onPage(pagePayload);
+            } catch (_) {}
+        }
 
         for (const candidate of candidates) {
             const cursor = candidate._id || candidate.recordId ? String(candidate._id || candidate.recordId) : null;
             yield { candidate, cursor };
         }
-
-        const nextCursor = page?.nextCursor ?? (candidates.length > 0 && (candidates[candidates.length - 1]?._id || candidates[candidates.length - 1]?.recordId) ? String(candidates[candidates.length - 1]._id || candidates[candidates.length - 1].recordId) : null);
 
         // Break if cursor did not advance or no next cursor
         if (!nextCursor || nextCursor === afterId) {

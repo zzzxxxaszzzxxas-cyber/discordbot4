@@ -207,6 +207,18 @@ class CampaignWorker {
         const completedUserIds = repository.getCompletedUserIds ? repository.getCompletedUserIds(job.id) : new Set();
         const seenUsers = new Set([...completedUserIds]);
 
+        // Helper to resolve active control panel with fallback to active job id
+        const getTargetPanel = () => {
+            let p = null;
+            if (job.startedByChannelId && repository.findPanelByChannelId) {
+                p = repository.findPanelByChannelId(job.startedByChannelId);
+            }
+            if (!p && repository.findPanelByActiveJobId) {
+                p = repository.findPanelByActiveJobId(job.id);
+            }
+            return p;
+        };
+
         // Helper to update panel debounced
         const updatePanelDebounced = async (force = false) => {
             const now = Date.now();
@@ -214,9 +226,7 @@ class CampaignWorker {
             lastPanelUpdateAt = now;
 
             try {
-                const panel = repository.findPanelByChannelId
-                    ? repository.findPanelByChannelId(job.startedByChannelId)
-                    : null;
+                const panel = getTargetPanel();
                 if (!panel || !panel.messageId) return;
 
                 const channel = await client.channels.fetch(panel.channelId).catch(() => null);
@@ -243,7 +253,7 @@ class CampaignWorker {
             } catch (_) {}
         };
 
-        // 3. Initialize candidate stream generator
+        // 3. Initialize candidate stream generator with onPage cursor checkpointing
         const candidateStream = streamCandidates({
             mode,
             baseConfig: {
@@ -253,7 +263,15 @@ class CampaignWorker {
             tokenManager,
             batchSize: Math.max(50, Number(config.batchSize || 200)),
             startCursor: candidateCursor,
-            seenUsers
+            seenUsers,
+            onPage: ({ nextCursor }) => {
+                if (nextCursor && nextCursor !== candidateCursor) {
+                    candidateCursor = nextCursor;
+                    try {
+                        repository.updateJob(job.id, { candidateCursor });
+                    } catch (_) {}
+                }
+            }
         });
 
         let streamExhausted = false;
@@ -297,7 +315,81 @@ class CampaignWorker {
             await maybeTopUpQueue();
 
             const activeTasks = new Set();
+            const currentlyProcessingUsers = new Set();
             let inFlightJoins = 0;
+
+            // Helper to flush batch logs when buffer reaches configured limit
+            const flushBatchBuffer = async () => {
+                if (batchBuffer.length >= config.progressEvery) {
+                    const batchItems = batchBuffer.splice(0, config.progressEvery);
+                    const bJoined = batchItems.filter(i => i.status === "joined").length;
+                    const bAlready = batchItems.filter(i => i.status === "already_member").length;
+                    const bFailed = batchItems.filter(i => i.status === "failed" || i.status === "guild_full").length;
+
+                    await sendBatchLog({
+                        webhookUrl: job.webhookUrl,
+                        mode,
+                        batchNumber: batchIndex++,
+                        items: batchItems,
+                        joinedCount: bJoined,
+                        alreadyCount: bAlready,
+                        failedCount: bFailed,
+                        targetGuildName
+                    });
+                }
+            };
+
+            // Common checkpoint function to ensure SQLite job counters are always updated
+            const checkpointJobCounters = () => {
+                const elapsedSeconds = Math.max(1, (Date.now() - startTime) / 1000);
+                const currentThroughput = Number((joinedCount / elapsedSeconds).toFixed(2));
+
+                try {
+                    repository.updateJob(job.id, {
+                        joinedCount,
+                        alreadyCount,
+                        failedCount,
+                        processedCount,
+                        retryCount,
+                        currentConcurrency,
+                        currentThroughput,
+                        candidateCursor
+                    });
+                } catch (err) {
+                    console.error(`[JoinCampaign] Checkpoint failed for job ${job.id}:`, err?.message);
+                }
+            };
+
+            // Centralized outcome pipeline guaranteeing strict checkpointing and batch logging
+            const recordItemOutcome = async ({ userId, status, error = null, retryDelayMs = 0 }) => {
+                if (status === "joined") {
+                    joinedCount++;
+                    targetMemberIds.add(userId);
+                    repository.updateItemStatus(job.id, userId, "joined");
+                    batchBuffer.push({ userId, status: "joined" });
+                } else if (status === "already_member") {
+                    alreadyCount++;
+                    targetMemberIds.add(userId);
+                    repository.updateItemStatus(job.id, userId, "already_member");
+                    batchBuffer.push({ userId, status: "already_member" });
+                } else if (status === "failed" || status === "guild_full") {
+                    failedCount++;
+                    repository.updateItemStatus(job.id, userId, "failed", error || status);
+                    batchBuffer.push({ userId, status: status === "guild_full" ? "guild_full" : "failed" });
+                } else if (status === "retry") {
+                    retryCount++;
+                    repository.incrementItemAttempt(job.id, userId, error, retryDelayMs);
+                } else if (status === "requeue_pending") {
+                    repository.updateItemStatus(job.id, userId, "pending");
+                }
+
+                if (status !== "requeue_pending" && status !== "retry") {
+                    await flushBatchBuffer();
+                }
+
+                checkpointJobCounters();
+                await updatePanelDebounced(false);
+            };
 
             // Main adaptive concurrency loop with strict quota reservation
             while (!this._isStopping && joinedCount < requestedQuota) {
@@ -324,7 +416,8 @@ class CampaignWorker {
                     continue;
                 }
 
-                const item = repository.claimNextPendingItem(job.id, 35000);
+                // 120s base lease to accommodate OAuth refresh, JIT tokens, and backoffs
+                const item = repository.claimNextPendingItem(job.id, 120000);
                 if (!item) {
                     if (activeTasks.size > 0) {
                         await Promise.race(activeTasks);
@@ -342,11 +435,33 @@ class CampaignWorker {
                     continue;
                 }
 
-                // Reserve in-flight join slot
+                if (currentlyProcessingUsers.has(item.userId)) {
+                    // Item is currently being actively processed by an in-flight task in this worker
+                    if (typeof repository.renewItemLease === "function") {
+                        repository.renewItemLease(job.id, item.userId, 60000);
+                    }
+                    continue;
+                }
+
+                // Reserve in-flight join slot and track active user
                 inFlightJoins++;
+                currentlyProcessingUsers.add(item.userId);
 
                 // Launch worker task concurrently
                 const taskPromise = (async () => {
+                    let heartbeatTimer = null;
+                    if (typeof repository.renewItemLease === "function") {
+                        heartbeatTimer = setInterval(() => {
+                            try {
+                                if (!currentlyProcessingUsers.has(item.userId)) {
+                                    if (heartbeatTimer) clearInterval(heartbeatTimer);
+                                    return;
+                                }
+                                repository.renewItemLease(job.id, item.userId, 60000);
+                            } catch (_) {}
+                        }, 15000);
+                    }
+
                     try {
                         const userId = item.userId;
                         // processedCount reflects distinct candidate users processed
@@ -356,36 +471,33 @@ class CampaignWorker {
 
                         // STEP 1: Pre-filter against current Target Membership
                         if (targetMemberIds.has(userId)) {
-                            alreadyCount++;
-                            repository.updateItemStatus(job.id, userId, "already_member");
-                            batchBuffer.push({ userId, status: "already_member" });
+                            await recordItemOutcome({ userId, status: "already_member" });
                             return;
                         }
 
                         // Quota safeguard before executing external work
                         if (joinedCount >= requestedQuota) {
-                            repository.updateItemStatus(job.id, userId, "pending");
+                            await recordItemOutcome({ userId, status: "requeue_pending" });
                             return;
                         }
 
-                        // STEP 2: JIT Token Retrieval & Refresh
+                        // STEP 2: JIT Token Retrieval & Refresh (Passing configured refreshMarginMs)
                         const tokenResult = await tokenManager.getAccessToken({
                             userId,
                             tokenField: item.tokenField || "oauth",
+                            marginMs: config.refreshMarginMs,
                             env: process.env
                         });
 
                         const accessToken = tokenResult?.accessToken;
                         if (!accessToken) {
-                            failedCount++;
-                            repository.updateItemStatus(job.id, userId, "failed", "token_unavailable");
-                            batchBuffer.push({ userId, status: "failed" });
+                            await recordItemOutcome({ userId, status: "failed", error: "token_unavailable" });
                             return;
                         }
 
                         // Final check on quota before calling Discord API
                         if (joinedCount >= requestedQuota) {
-                            repository.updateItemStatus(job.id, userId, "pending");
+                            await recordItemOutcome({ userId, status: "requeue_pending" });
                             return;
                         }
 
@@ -402,15 +514,7 @@ class CampaignWorker {
                         const discordCode = res?.error?.code ?? res?.code;
 
                         if (res?.ok || status === 201) {
-                            if (joinedCount < requestedQuota) {
-                                joinedCount++;
-                                targetMemberIds.add(userId);
-                                repository.updateItemStatus(job.id, userId, "joined");
-                                batchBuffer.push({ userId, status: "joined" });
-                            } else {
-                                targetMemberIds.add(userId);
-                                repository.updateItemStatus(job.id, userId, "joined");
-                            }
+                            await recordItemOutcome({ userId, status: "joined" });
 
                             // Adaptive ramp-up on consecutive successes
                             consecutiveSuccesses++;
@@ -419,13 +523,9 @@ class CampaignWorker {
                                 consecutiveSuccesses = 0;
                             }
                         } else if (status === 204) {
-                            alreadyCount++;
-                            targetMemberIds.add(userId);
-                            repository.updateItemStatus(job.id, userId, "already_member");
-                            batchBuffer.push({ userId, status: "already_member" });
+                            await recordItemOutcome({ userId, status: "already_member" });
                         } else if (status === 429) {
                             // Rate Limited: scale down concurrency & back off
-                            retryCount++;
                             consecutiveSuccesses = 0;
                             currentConcurrency = Math.max(minConcurrency, Math.floor(currentConcurrency / 2));
 
@@ -443,15 +543,12 @@ class CampaignWorker {
                                 backoffUntil = Date.now() + backoffDelay;
 
                                 // Re-queue item for retry with backoff delay
-                                repository.incrementItemAttempt(job.id, userId, "rate_limited", backoffDelay);
+                                await recordItemOutcome({ userId, status: "retry", error: "rate_limited", retryDelayMs: backoffDelay });
                             } else {
-                                failedCount++;
-                                repository.updateItemStatus(job.id, userId, "failed", "rate_limit_retries_exceeded");
-                                batchBuffer.push({ userId, status: "failed" });
+                                await recordItemOutcome({ userId, status: "failed", error: "rate_limit_retries_exceeded" });
                             }
                         } else if (status >= 500 || status === 0) {
                             // Server / Network Transient Error
-                            retryCount++;
                             consecutiveSuccesses = 0;
                             currentConcurrency = Math.max(minConcurrency, currentConcurrency - 1);
 
@@ -460,11 +557,9 @@ class CampaignWorker {
 
                             if (currentNetRetries <= 2) {
                                 const delay = Math.min(1000 * Math.pow(2, currentNetRetries), 12000) + randomJitter(50, 200);
-                                repository.incrementItemAttempt(job.id, userId, "network_error", delay);
+                                await recordItemOutcome({ userId, status: "retry", error: "network_error", retryDelayMs: delay });
                             } else {
-                                failedCount++;
-                                repository.updateItemStatus(job.id, userId, "failed", "network_retries_exceeded");
-                                batchBuffer.push({ userId, status: "failed" });
+                                await recordItemOutcome({ userId, status: "failed", error: "network_retries_exceeded" });
                             }
                         } else {
                             // 4xx Permanent Errors
@@ -473,62 +568,23 @@ class CampaignWorker {
                             if (discordCode === 30005) {
                                 // Target Guild member limit reached (Max guild members)
                                 isGuildFull = true;
-                                failedCount++;
-                                repository.updateItemStatus(job.id, userId, "failed", "guild_full");
-                                batchBuffer.push({ userId, status: "guild_full" });
+                                await recordItemOutcome({ userId, status: "guild_full", error: "guild_full" });
                                 return;
                             }
 
-                            failedCount++;
                             const errReason = res?.error?.message || (discordCode ? `error_${discordCode}` : `http_${status}`);
-                            repository.updateItemStatus(job.id, userId, "failed", errReason);
-                            batchBuffer.push({ userId, status: "failed" });
+                            await recordItemOutcome({ userId, status: "failed", error: errReason });
                         }
-
-                        // STEP 5: Batch Logging every progressEvery items
-                        if (batchBuffer.length >= config.progressEvery) {
-                            const batchItems = batchBuffer.splice(0, config.progressEvery);
-                            const bJoined = batchItems.filter(i => i.status === "joined").length;
-                            const bAlready = batchItems.filter(i => i.status === "already_member").length;
-                            const bFailed = batchItems.filter(i => i.status === "failed" || i.status === "guild_full").length;
-
-                            await sendBatchLog({
-                                webhookUrl: job.webhookUrl,
-                                mode,
-                                batchNumber: batchIndex++,
-                                items: batchItems,
-                                joinedCount: bJoined,
-                                alreadyCount: bAlready,
-                                failedCount: bFailed,
-                                targetGuildName
-                            });
-                        }
-
-                        // STEP 6: Checkpoint with throughput to SQLite
-                        const elapsedSeconds = Math.max(1, (Date.now() - startTime) / 1000);
-                        const currentThroughput = Number((joinedCount / elapsedSeconds).toFixed(2));
-
-                        repository.updateJob(job.id, {
-                            joinedCount,
-                            alreadyCount,
-                            failedCount,
-                            processedCount,
-                            retryCount,
-                            currentConcurrency,
-                            currentThroughput,
-                            candidateCursor
-                        });
-
-                        // STEP 7: Panel update debounced
-                        await updatePanelDebounced(false);
                     } catch (taskErr) {
                         console.error(`[JoinCampaign] Task execution error for user ${item.userId}:`, taskErr?.message);
-                        failedCount++;
                         try {
-                            repository.updateItemStatus(job.id, item.userId, "failed", taskErr?.message || "task_error");
+                            await recordItemOutcome({ userId: item.userId, status: "failed", error: taskErr?.message || "task_error" });
                         } catch (_) {}
                     } finally {
+                        if (heartbeatTimer) clearInterval(heartbeatTimer);
+                        currentlyProcessingUsers.delete(item.userId);
                         inFlightJoins--;
+                        checkpointJobCounters();
                     }
                 })();
 
@@ -705,8 +761,13 @@ class CampaignWorker {
                 (alreadyCount > 0 ? ` | อยู่ในเซิร์ฟแล้ว **${Number(alreadyCount).toLocaleString("th-TH")}** คน` : "") +
                 (failedCount > 0 ? ` | ไม่สำเร็จ **${Number(failedCount).toLocaleString("th-TH")}** คน` : "");
 
-            // Recalculate remaining ready count for target guild (Fail-closed)
-            const panel = repository.findPanelByChannelId(job.startedByChannelId || "");
+            const isInterrupted = finalStatus === "INTERRUPTED";
+            const targetChannelId = job.startedByChannelId || "";
+            let panel = (targetChannelId && repository.findPanelByChannelId) ? repository.findPanelByChannelId(targetChannelId) : null;
+            if (!panel && repository.findPanelByActiveJobId) {
+                panel = repository.findPanelByActiveJobId(job.id);
+            }
+
             let freshReadyCount = null;
             try {
                 let targetGuild = client.guilds.cache.get(String(job.targetGuildId));
@@ -732,9 +793,17 @@ class CampaignWorker {
                 freshReadyCount = panel?.lastReadyCount ?? null;
             }
             if (panel) {
+                const nextActiveJobId = isInterrupted ? job.id : null;
+                const nextLiveJob = isInterrupted ? {
+                    status: "INTERRUPTED",
+                    joinedCount,
+                    requestedAmount: job.requestedAmount || 0,
+                    currentConcurrency: job.currentConcurrency || 8
+                } : null;
+
                 repository.savePanel({
                     ...panel,
-                    activeJobId: null, // Clear active job association
+                    activeJobId: nextActiveJobId,
                     lastReadyCount: freshReadyCount,
                     lastStatusSummary: summaryText
                 });
@@ -747,12 +816,12 @@ class CampaignWorker {
                             mode,
                             panelState: {
                                 ...panel,
-                                activeJobId: null,
+                                activeJobId: nextActiveJobId,
                                 lastReadyCount: freshReadyCount,
                                 lastStatusSummary: summaryText
                             },
                             readyCount: freshReadyCount,
-                            liveJob: null, // Idle
+                            liveJob: nextLiveJob,
                             targetGuildName
                         });
                         await message.edit(payload).catch(() => {});

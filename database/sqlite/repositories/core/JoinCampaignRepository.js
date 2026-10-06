@@ -22,8 +22,8 @@ class JoinCampaignRepository {
                 id, mode, source_guild_id, source_guild_name, target_guild_id, target_guild_name,
                 status, requested_amount, selected_amount, joined_count, already_count, failed_count,
                 processed_count, retry_count, current_concurrency, current_throughput, recovery_count, candidate_cursor, last_error,
-                started_by_user_id, created_at, updated_at, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                started_by_user_id, started_by_channel_id, created_at, updated_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const runCreate = this.db.transaction(() => {
@@ -57,6 +57,7 @@ class JoinCampaignRepository {
                 data.candidateCursor ? String(data.candidateCursor) : null,
                 data.lastError ? String(data.lastError) : null,
                 data.startedByUserId ? String(data.startedByUserId) : null,
+                data.startedByChannelId ? String(data.startedByChannelId) : null,
                 Number(data.createdAt) || now,
                 Number(data.updatedAt) || now,
                 data.completedAt ? Number(data.completedAt) : null
@@ -158,6 +159,10 @@ class JoinCampaignRepository {
             setClauses.push("last_error = ?");
             params.push(lastErr ? String(lastErr) : null);
         }
+        if (updates.startedByChannelId !== undefined) {
+            setClauses.push("started_by_channel_id = ?");
+            params.push(updates.startedByChannelId ? String(updates.startedByChannelId) : null);
+        }
         if (updates.completedAt !== undefined) {
             setClauses.push("completed_at = ?");
             params.push(updates.completedAt ? Number(updates.completedAt) : null);
@@ -166,6 +171,51 @@ class JoinCampaignRepository {
         params.push(String(id));
         this.db.prepare(`UPDATE join_campaign_jobs SET ${setClauses.join(", ")} WHERE id = ?`).run(...params);
         return this.findJobById(id);
+    }
+
+    claimInterruptedJob(jobId) {
+        const now = Date.now();
+        const info = this.db.prepare(`
+            UPDATE join_campaign_jobs
+            SET status = 'RUNNING', updated_at = ?
+            WHERE id = ? AND status = 'INTERRUPTED'
+        `).run(now, String(jobId));
+        return info.changes > 0;
+    }
+
+    reconcileJobCounters(jobId) {
+        const counts = this.db.prepare(`
+            SELECT 
+                status,
+                COUNT(*) as count
+            FROM join_campaign_items
+            WHERE campaign_id = ?
+            GROUP BY status
+        `).all(String(jobId));
+
+        let joined = 0;
+        let already = 0;
+        let failed = 0;
+
+        for (const row of counts) {
+            if (row.status === "joined") joined = Number(row.count) || 0;
+            else if (row.status === "already_member") already = Number(row.count) || 0;
+            else if (row.status === "failed") failed = Number(row.count) || 0;
+        }
+
+        const processed = joined + already + failed;
+
+        this.db.prepare(`
+            UPDATE join_campaign_jobs
+            SET joined_count = MAX(joined_count, ?),
+                already_count = MAX(already_count, ?),
+                failed_count = MAX(failed_count, ?),
+                processed_count = MAX(processed_count, ?),
+                updated_at = ?
+            WHERE id = ?
+        `).run(joined, already, failed, processed, Date.now(), String(jobId));
+
+        return this.findJobById(jobId);
     }
 
     listRecentJobs({ limit = 20, offset = 0 } = {}) {
@@ -182,6 +232,7 @@ class JoinCampaignRepository {
             SELECT 
                 COUNT(*) as total_campaigns,
                 COALESCE(SUM(joined_count), 0) as total_joined,
+                COALESCE(SUM(already_count), 0) as total_already,
                 COALESCE(SUM(processed_count), 0) as total_processed,
                 COALESCE(SUM(failed_count), 0) as total_failed
             FROM join_campaign_jobs
@@ -189,6 +240,7 @@ class JoinCampaignRepository {
 
         const totalCampaigns = Number(totals?.total_campaigns) || 0;
         const totalJoined = Number(totals?.total_joined) || 0;
+        const totalAlready = Number(totals?.total_already) || 0;
         const totalProcessed = Number(totals?.total_processed) || 0;
         const totalFailed = Number(totals?.total_failed) || 0;
         const successRatePercent = totalProcessed > 0
@@ -199,6 +251,7 @@ class JoinCampaignRepository {
             totalJobs: totalCampaigns,
             totalCampaigns,
             totalJoined,
+            totalAlready,
             totalProcessed,
             totalFailed,
             successRatePercent
@@ -296,6 +349,17 @@ class JoinCampaignRepository {
         `).run(error ? String(error) : null, leaseUntil, now, String(campaignId), String(userId));
     }
 
+    renewItemLease(campaignId, userId, extensionMs = 60000) {
+        const now = Date.now();
+        const leaseUntil = now + extensionMs;
+        const info = this.db.prepare(`
+            UPDATE join_campaign_items
+            SET leased_until = ?, updated_at = ?
+            WHERE campaign_id = ? AND user_id = ? AND status = 'processing'
+        `).run(leaseUntil, now, String(campaignId), String(userId));
+        return info.changes > 0;
+    }
+
     releaseExpiredLeases(campaignId, force = false) {
         const now = Date.now();
         const info = this.db.prepare(`
@@ -381,6 +445,12 @@ class JoinCampaignRepository {
         return row ? this._hydratePanel(row) : null;
     }
 
+    findPanelByActiveJobId(jobId) {
+        if (!jobId) return null;
+        const row = this.db.prepare("SELECT * FROM join_campaign_panels WHERE active_job_id = ? ORDER BY updated_at DESC LIMIT 1").get(String(jobId));
+        return row ? this._hydratePanel(row) : null;
+    }
+
     deletePanelByChannelId(channelId) {
         const info = this.db.prepare("DELETE FROM join_campaign_panels WHERE channel_id = ?").run(String(channelId));
         return info.changes;
@@ -414,6 +484,7 @@ class JoinCampaignRepository {
             candidateCursor: row.candidate_cursor ?? null,
             lastError: row.last_error ?? null,
             startedByUserId: row.started_by_user_id,
+            startedByChannelId: row.started_by_channel_id ?? null,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             completedAt: row.completed_at

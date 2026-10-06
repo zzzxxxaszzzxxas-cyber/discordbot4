@@ -72,8 +72,9 @@ module.exports = {
                 tokenManager: customManager,
                 batchSize: context.config?.batchSize || 500,
                 onPage: (page) => {
-                    if (summary && page?.statistics) {
-                        for (const [k, v] of Object.entries(page.statistics)) {
+                    const stats = page?.statistics || page?.page?.statistics;
+                    if (summary && stats) {
+                        for (const [k, v] of Object.entries(stats)) {
                             if (typeof v === "number") {
                                 summary[k] = (summary[k] || 0) + v;
                             }
