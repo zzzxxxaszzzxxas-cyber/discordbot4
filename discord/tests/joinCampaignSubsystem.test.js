@@ -381,7 +381,7 @@ test("Join Campaign: Adaptive worker halts immediately on Discord Guild Full err
 
     const finishedJob = repo.findJobById(testJobId);
     assert.equal(finishedJob.status, "SERVER_FULL");
-    assert.match(finishedJob.lastError, /เซิร์ฟเวอร์ปลายทางมีสมาชิกเต็มแล้ว/);
+    assert.match(finishedJob.lastError, /เซิร์ฟเวอร์ปลายทางมีสมาชิกถึงจำนวนสูงสุดแล้ว/);
 });
 
 test("Join Campaign: Adaptive worker skips members already in target guild without calling API", async () => {
@@ -2990,14 +2990,26 @@ test("P1 Audit: runStartupRecovery automatically recovers hard-crashed orphaned 
     };
 
     // 3. Boot triggers runStartupRecovery
-    const recoveryResult = await runStartupRecovery({
-        client: mockClient,
-        repository: repo,
-        tokenManager: mockTokenManager
-    });
+    const originalStartWorker = campaignWorker.startWorker;
+    let resumedJob = null;
+    campaignWorker.startWorker = async ({ job }) => {
+        resumedJob = job;
+        return { workerPromise: Promise.resolve() };
+    };
+    let recoveryResult;
+    try {
+        recoveryResult = await runStartupRecovery({
+            client: mockClient,
+            repository: repo,
+            tokenManager: mockTokenManager
+        });
+    } finally {
+        campaignWorker.startWorker = originalStartWorker;
+    }
 
     assert.equal(recoveryResult.recovered, true, "Hard-crashed job must be recovered");
     assert.equal(recoveryResult.jobId, testJobId);
+    assert.equal(resumedJob.id, testJobId, "Recovered job must be handed to the worker");
 
     // 4. Recovery count must have been incremented
     const updatedJob = repo.findJobById(testJobId);
@@ -3008,8 +3020,45 @@ test("P1 Audit: runStartupRecovery automatically recovers hard-crashed orphaned 
     assert.equal(pendingCount, 2, "Both items (including mid-flight leased) must be reset to pending");
 
     // 6. Cleanup
-    await campaignWorker.waitForCompletion();
     repo.markJobCompleted(testJobId);
+});
+
+test("P1 regression: startup recovery automatically resumes an INTERRUPTED campaign", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "rec_interrupted_" + Date.now();
+    repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "INTERRUPTED",
+        requestedAmount: 10,
+        selectedAmount: 10,
+        joinedCount: 4,
+        recoveryCount: 0
+    });
+
+    const originalStartWorker = campaignWorker.startWorker;
+    let resumedJob = null;
+    campaignWorker.startWorker = async ({ job }) => {
+        resumedJob = job;
+        return { workerPromise: Promise.resolve() };
+    };
+
+    try {
+        const recoveryResult = await runStartupRecovery({ repository: repo });
+
+        assert.equal(recoveryResult.recovered, true);
+        assert.equal(recoveryResult.jobId, testJobId);
+        assert.equal(resumedJob.id, testJobId);
+        assert.equal(resumedJob.status, "RUNNING");
+
+        const updatedJob = repo.findJobById(testJobId);
+        assert.equal(updatedJob.status, "RUNNING");
+        assert.equal(updatedJob.recoveryCount, 1);
+    } finally {
+        campaignWorker.startWorker = originalStartWorker;
+        repo.markJobCompleted(testJobId);
+    }
 });
 
 test("P1 Audit: runStartupRecovery cleanly expires orphaned STAGE job and unblocks new campaigns", async () => {
