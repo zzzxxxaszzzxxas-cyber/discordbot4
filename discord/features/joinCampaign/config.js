@@ -1,10 +1,5 @@
 "use strict";
 
-function readBooleanDefaultFalse(value) {
-    if (value === undefined || value === null || value === "") return false;
-    return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
-}
-
 function readPositiveInt(value, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed < min) return fallback;
@@ -23,7 +18,6 @@ function getJoinCampaignConfig(env = process.env) {
     const allowedGuilds = parseIdSet(env.JOIN_CAMPAIGN_ALLOWED_GUILDS);
 
     return {
-        enabled: readBooleanDefaultFalse(env.JOIN_CAMPAIGN_ENABLED),
         allowedGuilds,
         batchSize,
         maxUsers: batchSize,
@@ -52,7 +46,6 @@ module.exports = {
     getJoinCampaignConfig,
     isGuildAllowed,
     isSnowflake,
-    readBooleanDefaultFalse,
     readPositiveInt,
     parseIdSet
 };

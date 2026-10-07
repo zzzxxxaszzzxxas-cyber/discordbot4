@@ -129,6 +129,12 @@ function sanitizeUserFacingError(reason) {
     if (lower.includes("token_unavailable") || lower.includes("invalid_grant")) {
         return "โทเค็นสำหรับดึงสมาชิกไม่พร้อมใช้งานหรือหมดอายุ";
     }
+    if (lower.includes("50001") || lower.includes("50013") || lower.includes("missing access") || lower.includes("missing permissions")) {
+        return "บอทไม่มีสิทธิ์ที่จำเป็นในการดำเนินการนี้ (กรุณาตรวจสอบสิทธิ์ของบอทในเซิร์ฟเวอร์)";
+    }
+    if (lower.includes("10004") || lower.includes("unknown guild")) {
+        return "ไม่พบเซิร์ฟเวอร์ปลายทาง หรือบอทไม่ได้อยู่ในเซิร์ฟเวอร์ดังกล่าวแล้ว";
+    }
     // If reason looks like a technical error / stack trace:
     if (lower.includes("error") || reason.includes("at ") || reason.includes("SQLITE_") || reason.includes("ENOENT")) {
         return "ระบบขัดข้องชั่วคราว ไม่สามารถดำเนินการต่อได้";

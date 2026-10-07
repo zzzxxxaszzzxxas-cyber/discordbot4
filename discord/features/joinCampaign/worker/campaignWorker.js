@@ -3,7 +3,7 @@
 const discordApi = require("../../../verification/utils/discordAPI");
 const oauthTokenManager = require("../../../core/oauthTokenManager");
 const { getJoinCampaignConfig } = require("../config");
-const { sendBatchLog, sendFinalSummaryEmbed } = require("./batchLogger");
+const { sendBatchLog, sendFinalSummaryEmbed, sanitizeUserFacingError } = require("./batchLogger");
 const { getMode } = require("../modes/modeRegistry");
 const { streamCandidates } = require("../services/candidateQueryService");
 const { buildPanelPayload } = require("../ui/panelBuilder");
@@ -92,10 +92,6 @@ class CampaignWorker {
         targetMemberIds = null,
         config = getJoinCampaignConfig()
     }) {
-        if (!config.enabled) {
-            throw new Error("Join Campaign subsystem is disabled (JOIN_CAMPAIGN_ENABLED=false)");
-        }
-
         if (this.isRunning) {
             throw new Error("ตอนนี้มีงานดึงสมาชิกกำลังทำงานอยู่ กรุณารอให้งานเดิมเสร็จก่อนนะครับ");
         }
@@ -694,7 +690,7 @@ class CampaignWorker {
 
         } catch (err) {
             finalStatus = "FAILED";
-            statusReason = err.message || "เกิดข้อผิดพลาดในการประมวลผล";
+            statusReason = sanitizeUserFacingError(err.message || "เกิดข้อผิดพลาดในการประมวลผล");
             const elapsedSeconds = Math.max(1, (Date.now() - startTime) / 1000);
             repository.updateJob(job.id, {
                 status: "FAILED",
@@ -710,7 +706,7 @@ class CampaignWorker {
             dispatchSystemicAlert({
                 code: "join_campaign.worker_crash",
                 title: "Join Campaign: การประมวลผลล้มเหลว",
-                description: statusReason,
+                description: err.message || statusReason,
                 details: {
                     campaignId: job.id,
                     joinedCount,
@@ -734,7 +730,7 @@ class CampaignWorker {
             // Checkpoint final state to SQLite
             repository.updateJob(job.id, {
                 status: finalStatus,
-                lastError: statusReason,
+                lastError: statusReason ? sanitizeUserFacingError(statusReason) : null,
                 joinedCount,
                 alreadyCount,
                 failedCount,

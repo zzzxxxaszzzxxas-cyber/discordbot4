@@ -129,10 +129,6 @@ async function validateGuildTargets({ client, mode, baseConfig = {}, webhookUrl 
 }
 
 async function runPreflight({ client, mode, baseConfig = {}, webhookUrl = null, tokenManager, requestedAmount = null, config = getJoinCampaignConfig() }) {
-    if (!config.enabled) {
-        return { ok: false, error: "ระบบดึงสมาชิกถูกปิดใช้งานอยู่ในขณะนี้ครับ (JOIN_CAMPAIGN_ENABLED=false)" };
-    }
-
     const targetValidation = await validateGuildTargets({ client, mode, baseConfig, webhookUrl, config });
     if (!targetValidation.ok) {
         return targetValidation;

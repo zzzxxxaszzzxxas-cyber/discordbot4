@@ -360,10 +360,9 @@ CREATE INDEX IF NOT EXISTS idx_join_items_claim ON join_campaign_items(campaign_
    - Worker จะตรวจจับสถานะ 204 และบันทึก item เป็น `already_member` ทันที โดย**ไม่เพิ่ม** `joined_count` ซ้ำสอง
     - ระบบจะหยิบ candidate คนถัดไปมาประมวลผล เพื่อให้เข้าตาม Joined Quota ที่เหลืออยู่ได้อย่างแม่นยำ
 
-### 7.3 Boot Recovery & Master Switch Enforcement
-1. **Master Switch Gate (`JOIN_CAMPAIGN_ENABLED`)**:
-   - ตรวจสอบ `config.enabled` ที่ Command Handler (`/join-panel`), Interaction Router และ Service Layer
-   - หากปิดใช้งาน ระบบจะไม่ยอมรับคำสั่งหรือ interaction ใดๆ และปฏิเสธการเริ่มงานแบบ Fail-Closed
+### 7.3 Boot Recovery & Startup Safety
+1. **Always-Available Campaign Flow**:
+   - `/join-panel`, panel interactions, preflight, worker และ startup recovery ไม่มี feature toggle; ยังคงตรวจ Owner, permission, guild และเงื่อนไขการทำงานตามปกติ
 2. **Fail-Closed Target Guild Resolution**:
    - หาก Target Guild ไม่อยู่ใน Discord.js cache ระบบจะทำการ fetch สดจาก Discord API
    - หาก fetch ไม่สำเร็จหรือไม่พบบอทใน Target Guild Worker จะหยุดทันที ปรับสถานะงานเป็น `FAILED` และไม่ทำการยิงเพิ่มสมาชิก

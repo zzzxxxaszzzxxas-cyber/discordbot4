@@ -2,7 +2,7 @@
 
 const campaignWorker = require("../worker/campaignWorker");
 const { getLiveTargetMemberIds } = require("../services/preflightService");
-const { getJoinCampaignConfig } = require("../config");
+const { sanitizeUserFacingError } = require("../worker/batchLogger");
 
 const MAX_RECOVERY_ATTEMPTS = 5;
 
@@ -35,7 +35,10 @@ async function updatePanelRecoveryFailure({ client, repository, jobId, channelId
             : (jobId && repository.findPanelByActiveJobId ? repository.findPanelByActiveJobId(jobId) : null);
         if (!panel) return;
 
-        const summaryText = `เกิดข้อผิดพลาดในการกู้คืนงาน: ${errorMsg}`;
+        const sanitizedError = sanitizeUserFacingError(errorMsg);
+        const summaryText = sanitizedError.startsWith("เกิดข้อผิดพลาด")
+            ? sanitizedError
+            : `เกิดข้อผิดพลาดในการกู้คืนงาน: ${sanitizedError}`;
         const updatedPanel = {
             ...panel,
             activeJobId: null,
@@ -71,11 +74,6 @@ async function updatePanelRecoveryFailure({ client, repository, jobId, channelId
 let activeRecoveryPromise = null;
 
 function runStartupRecovery({ client, repository, tokenManager, discord }) {
-    const config = getJoinCampaignConfig();
-    if (!config.enabled) {
-        return Promise.resolve({ recovered: false, reason: "disabled_by_master_switch" });
-    }
-
     if (!repository || typeof repository.findActiveRunningJob !== "function") {
         return Promise.resolve({ recovered: false, reason: "no_repository" });
     }
@@ -91,12 +89,45 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
                 return { recovered: false, reason: "no_interrupted_jobs" };
             }
 
-            // Atomic claim on interrupted job to prevent concurrent recovery execution
+            // 1. Expire stale pre-start STAGE jobs that were left in-flight during crash/restart
+            if (interruptedJob.status === "STAGE") {
+                const expireReason = "staged_job_expired";
+                console.warn(`[JoinCampaign] ⚠️ งาน ${interruptedJob.id} อยู่ในสถานะ STAGE ก่อนรีสตาร์ต — ยกเลิกงานที่ค้างในขั้นตอนเตรียมการ`);
+                repository.updateJob(interruptedJob.id, {
+                    status: "FAILED",
+                    lastError: expireReason,
+                    completedAt: Date.now()
+                });
+                await updatePanelRecoveryFailure({
+                    client,
+                    repository,
+                    jobId: interruptedJob.id,
+                    channelId: interruptedJob.startedByChannelId,
+                    errorMsg: "งานในขั้นตอนเตรียมการหมดอายุจากการรีสตาร์ต",
+                    targetGuildName: interruptedJob.targetGuildName
+                });
+                return { recovered: false, reason: "staged_job_expired", jobId: interruptedJob.id };
+            }
+
+            // 2. Atomic claim on orphaned RUNNING jobs left from hard crash/SIGKILL
+            if (interruptedJob.status === "RUNNING") {
+                if (typeof repository.claimOrphanedRunningJob === "function") {
+                    const claimedRunning = repository.claimOrphanedRunningJob(interruptedJob.id);
+                    if (!claimedRunning) {
+                        return { recovered: false, reason: "running_job_already_claimed" };
+                    }
+                    interruptedJob.status = "INTERRUPTED";
+                    console.warn(`[JoinCampaign] ⚠️ ตรวจพบงานที่ค้างในสถานะ RUNNING จาก Hard Crash/Kill: ${interruptedJob.id} -> เปลี่ยนเป็น INTERRUPTED เพื่อกู้คืน`);
+                }
+            }
+
+            // 3. Atomic claim on interrupted job to prevent concurrent recovery execution
             if (typeof repository.claimInterruptedJob === "function" && interruptedJob.status === "INTERRUPTED") {
                 const claimed = repository.claimInterruptedJob(interruptedJob.id);
                 if (!claimed) {
                     return { recovered: false, reason: "job_already_claimed" };
                 }
+                interruptedJob.status = "RUNNING";
             }
 
             const currentRecoveryCount = interruptedJob.recoveryCount || interruptedJob.recovery_count || 0;
@@ -205,7 +236,7 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
             try {
                 targetMemberIds = await getLiveTargetMemberIds(targetGuild);
             } catch (err) {
-                const failMsg = `ไม่สามารถดึงรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้: ${err.message}`;
+                const failMsg = `ไม่สามารถดึงรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้: ${sanitizeUserFacingError(err.message)}`;
                 console.error(`[JoinCampaign] ❌ ${failMsg}`);
                 repository.updateJob(interruptedJob.id, {
                     status: "FAILED",
@@ -223,7 +254,7 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
                 dispatchRecoveryAlert({
                     code: "join_campaign.recovery_member_fetch_failed",
                     title: "Join Campaign: ตรวจสอบรายชื่อสมาชิกล้มเหลวขณะกู้คืน",
-                    description: failMsg,
+                    description: err.message || failMsg,
                     details: {
                         campaignId: interruptedJob.id,
                         targetGuildId: interruptedJob.targetGuildId
@@ -250,7 +281,7 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
             }
         } catch (err) {
             console.error(`[JoinCampaign] ❌ ไม่สามารถกู้คืนงานเดิมได้:`, err.message);
-            const failMsg = `กู้คืนงานเดิมไม่สำเร็จ: ${err.message}`;
+            const failMsg = `กู้คืนงานเดิมไม่สำเร็จ: ${sanitizeUserFacingError(err.message)}`;
             repository.updateJob(interruptedJob.id, {
                 status: "FAILED",
                 lastError: failMsg,
@@ -273,18 +304,19 @@ function runStartupRecovery({ client, repository, tokenManager, discord }) {
                     targetGuildId: interruptedJob.targetGuildId
                 }
             });
-            return { recovered: false, error: err.message, jobId: interruptedJob.id };
+            return { recovered: false, error: failMsg, jobId: interruptedJob.id };
         }
 
         return { recovered: true, jobId: interruptedJob.id, workerPromise };
         } catch (err) {
             console.error(`[JoinCampaign] ❌ เกิดข้อผิดพลาดในการตรวจสอบงานค้าง:`, err.message);
+            const userError = sanitizeUserFacingError(err.message);
             dispatchRecoveryAlert({
                 code: "join_campaign.recovery_error",
                 title: "Join Campaign: เกิดข้อผิดพลาดร้ายแรงขณะกู้คืน",
                 description: err.message
             });
-            return { recovered: false, error: err.message };
+            return { recovered: false, error: userError };
         }
     })().finally(() => {
         activeRecoveryPromise = null;

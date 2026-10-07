@@ -17,9 +17,6 @@ function listJoinCampaignTargets(client, campaignConfig = joinCampaign.getJoinCa
 function resolveJoinCampaignTarget(client, guildId, campaignConfig = joinCampaign.getJoinCampaignConfig()) {
     const safeGuildId = String(guildId || "").trim();
 
-    if (!campaignConfig.enabled) {
-        return { ok: false, status: 503, code: "CAMPAIGN_DISABLED", error: "ระบบ Join Campaign ถูกปิด" };
-    }
     if (!/^\d{17,22}$/.test(safeGuildId)) {
         return { ok: false, status: 400, code: "INVALID_GUILD_ID", error: "Guild ID ไม่ถูกต้อง" };
     }
@@ -50,8 +47,6 @@ function resolveJoinCampaignTarget(client, guildId, campaignConfig = joinCampaig
 
 function resolveJoinCampaignStartStatus(code) {
     switch (code) {
-        case "CAMPAIGN_DISABLED":
-            return 503;
         case "INVALID_GUILD_ID":
             return 400;
         case "TARGET_GUILD_NOT_ALLOWED":
@@ -68,7 +63,7 @@ function registerJoinCampaignRoutes({ app, express, client, checkAuth }) {
             const config = joinCampaign.getJoinCampaignConfig();
             res.json({
                 success: true,
-                enabled: config.enabled,
+                enabled: true,
                 allowlistConfigured: config.allowedGuilds.size > 0,
                 targets: listJoinCampaignTargets(client, config)
             });

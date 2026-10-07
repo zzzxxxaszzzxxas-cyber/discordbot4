@@ -1,7 +1,6 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const { getJoinCampaignConfig } = require("../config");
 const { runPreflight, getLiveTargetMemberIds } = require("./preflightService");
 const { countEligibleCandidates } = require("./candidateQueryService");
 const oauthTokenManager = require("../../../core/oauthTokenManager");
@@ -9,6 +8,7 @@ const { buildPreflightConfirmationPayload } = require("../ui/confirmationBuilder
 const { buildPanelPayload } = require("../ui/panelBuilder");
 const campaignWorker = require("../worker/campaignWorker");
 const { getMode } = require("../modes/modeRegistry");
+const { sanitizeUserFacingError } = require("../worker/batchLogger");
 
 const stagedSessions = new Map();
 
@@ -20,7 +20,8 @@ async function updatePanelFailureState({ client, repository, channelId, jobId, e
             : (jobId && repository.findPanelByActiveJobId ? repository.findPanelByActiveJobId(jobId) : null);
         if (!panel) return;
 
-        const summaryText = `เกิดข้อผิดพลาด: ${errorMsg}`;
+        const sanitizedMsg = sanitizeUserFacingError(errorMsg);
+        const summaryText = sanitizedMsg.startsWith("เกิดข้อผิดพลาด") ? sanitizedMsg : `เกิดข้อผิดพลาด: ${sanitizedMsg}`;
         const updatedPanel = {
             ...panel,
             activeJobId: null,
@@ -70,14 +71,6 @@ class JoinCampaignService {
         channelId = null,
         tokenManager = null
     }) {
-        const config = getJoinCampaignConfig();
-        if (!config.enabled) {
-            return {
-                ok: false,
-                error: "ระบบดึงสมาชิกถูกปิดใช้งานอยู่ในขณะนี้ครับ (JOIN_CAMPAIGN_ENABLED=false)"
-            };
-        }
-
         if (this.isRunning) {
             return {
                 ok: false,
@@ -137,14 +130,6 @@ class JoinCampaignService {
     }
 
     async confirmAndStartCampaign({ stageId, client, repository, tokenManager = oauthTokenManager, discord = null }) {
-        const config = getJoinCampaignConfig();
-        if (!config.enabled) {
-            return {
-                ok: false,
-                error: "ระบบดึงสมาชิกถูกปิดใช้งานอยู่ในขณะนี้ครับ (JOIN_CAMPAIGN_ENABLED=false)"
-            };
-        }
-
         const session = stagedSessions.get(stageId);
         if (!session) {
             return {
@@ -191,9 +176,10 @@ class JoinCampaignService {
                 targetMemberIds: freshTargetMemberIds
             });
         } catch (err) {
+            const sanitizedMsg = sanitizeUserFacingError(err?.message || "เกิดข้อผิดพลาดในการเชื่อมต่อ");
             return {
                 ok: false,
-                error: `ไม่สามารถตรวจสอบรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้: ${err.message || "เกิดข้อผิดพลาดในการเชื่อมต่อ"}`
+                error: `ไม่สามารถตรวจสอบรายชื่อสมาชิกปัจจุบันของเซิร์ฟเวอร์ปลายทางได้: ${sanitizedMsg}`
             };
         }
 
@@ -272,7 +258,8 @@ class JoinCampaignService {
 
             if (startResult?.workerPromise) {
                 startResult.workerPromise.catch(async (loopErr) => {
-                    const errorMsg = loopErr?.message || "Worker loop terminated unexpectedly";
+                    const rawErrorMsg = loopErr?.message || "Worker loop terminated unexpectedly";
+                    const errorMsg = sanitizeUserFacingError(rawErrorMsg);
                     try {
                         repository.updateJob(jobId, {
                             status: "FAILED",
@@ -293,7 +280,8 @@ class JoinCampaignService {
                 });
             }
         } catch (err) {
-            const errorMsg = err?.message || "ไม่สามารถเริ่มต้น Worker ได้";
+            const rawErrorMsg = err?.message || "ไม่สามารถเริ่มต้น Worker ได้";
+            const errorMsg = sanitizeUserFacingError(rawErrorMsg);
             try {
                 repository.updateJob(jobId, {
                     status: "FAILED",

@@ -19,7 +19,6 @@ const discordApi = require("../verification/utils/discordAPI");
 const database = require("../../database/index");
 
 test.beforeEach(() => {
-    process.env.JOIN_CAMPAIGN_ENABLED = "true";
     try {
         const repo = database.repositories.joinCampaign;
         repo.db.prepare("DELETE FROM join_campaign_jobs").run();
@@ -243,7 +242,7 @@ test("Join Campaign: Preflight sets requestedQuota accurately without clamping t
         baseConfig: { targetGuildId: "123456789012345678" },
         requestedAmount: 100,
         tokenManager: mockTokenManager,
-        config: { enabled: true, allowedGuilds: new Set() }
+        config: { allowedGuilds: new Set() }
     });
 
     assert.equal(preflight.ok, true);
@@ -257,7 +256,7 @@ test("Join Campaign: Preflight sets requestedQuota accurately without clamping t
         baseConfig: { targetGuildId: "123456789012345678" },
         requestedAmount: null,
         tokenManager: mockTokenManager,
-        config: { enabled: true, allowedGuilds: new Set() }
+        config: { allowedGuilds: new Set() }
     });
 
     assert.equal(preflightDefault.ok, true);
@@ -809,55 +808,129 @@ test("Join Campaign: discordApi.addMemberToGuild accepts callerManagedRetry opti
     assert.equal(resMissing.error, "Missing guildId/userId/accessToken");
 });
 
-test("Join Campaign: Master switch JOIN_CAMPAIGN_ENABLED=false blocks command, interaction, and service layers", async () => {
-    const prevEnabled = process.env.JOIN_CAMPAIGN_ENABLED;
+test("Join Campaign: command, panel interactions, and service validation remain available", async () => {
     const prevOwner = process.env.OWNER_ID;
-    process.env.JOIN_CAMPAIGN_ENABLED = "false";
     process.env.OWNER_ID = "test-owner";
+    const repository = database.repositories.joinCampaign;
+    const channelId = `join_panel_always_${Date.now()}`;
+    const messageId = `join_panel_message_${Date.now()}`;
 
     try {
-        let commandReply = null;
+        let commandPayload = null;
         const mockCommandInteraction = {
-            guild: { id: "guild-1" },
+            guild: { id: "123456789012345678" },
+            guildId: "123456789012345678",
+            channelId,
             user: { id: "test-owner" },
-            reply: async (payload) => { commandReply = payload; }
+            options: { getString: () => null },
+            channel: { messages: { delete: async () => {} } },
+            reply: async (payload) => {
+                commandPayload = payload;
+                return { id: messageId };
+            }
         };
         await handleJoinPanelCommand(mockCommandInteraction, {});
-        assert.ok(commandReply?.content?.includes("JOIN_CAMPAIGN_ENABLED=false"));
+        assert.ok(commandPayload);
+        assert.equal(repository.findPanelByChannelId(channelId)?.messageId, messageId);
 
-        let interactionReply = null;
+        let shownModal = null;
         const mockButtonInteraction = {
             customId: PANEL_IDS.BTN_START,
             user: { id: "test-owner" },
-            reply: async (payload) => { interactionReply = payload; }
+            channelId,
+            isStringSelectMenu: () => false,
+            isButton: () => true,
+            isModalSubmit: () => false,
+            showModal: async (modal) => { shownModal = modal; }
         };
         await handleJoinCampaignInteraction(mockButtonInteraction, {});
-        assert.ok(interactionReply?.content?.includes("JOIN_CAMPAIGN_ENABLED=false"));
+        assert.ok(shownModal);
 
         const stageRes = await joinCampaignService.stageCampaign({
-            mode: "ALL_TO_TARGET",
-            targetGuildId: "123",
-            requestedAmount: 10
+            client: { guilds: { cache: new Map() } },
+            repository,
+            mode: modeRegistry.getMode("ALL_TO_TARGET"),
+            baseConfig: { targetGuildId: "invalid" }
         });
         assert.equal(stageRes.ok, false);
-        assert.match(stageRes.error, /ปิดใช้งาน/);
+        assert.match(stageRes.error, /17–22 หลัก/);
 
         const startRes = await joinCampaignService.confirmAndStartCampaign({
-            jobId: "some_job",
-            guildId: "123"
+            stageId: "missing_stage",
+            client: {},
+            repository
         });
         assert.equal(startRes.ok, false);
-        assert.match(startRes.error, /ปิดใช้งาน/);
+        assert.match(startRes.error, /หมดอายุ/);
     } finally {
-        if (prevEnabled !== undefined) {
-            process.env.JOIN_CAMPAIGN_ENABLED = prevEnabled;
-        } else {
-            delete process.env.JOIN_CAMPAIGN_ENABLED;
-        }
+        repository.deletePanelByChannelId(channelId);
         if (prevOwner !== undefined) {
             process.env.OWNER_ID = prevOwner;
         } else {
             delete process.env.OWNER_ID;
+        }
+    }
+});
+
+test("Join Campaign: stage and confirmation start a worker using runtime validation only", async () => {
+    const prevAllowedGuilds = process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS;
+    process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS = "";
+    const repository = database.repositories.joinCampaign;
+    const targetGuildId = "123456789012345678";
+    const targetGuild = {
+        id: targetGuildId,
+        name: "Target Server",
+        memberCount: 1,
+        members: {
+            me: { permissions: { has: () => true } },
+            fetch: async () => new Map()
+        }
+    };
+    const client = {
+        guilds: {
+            cache: new Map([[targetGuildId, targetGuild]])
+        }
+    };
+    const tokenManager = {
+        listAccessTokenCandidates: async () => [
+            { discord: { userId: "ready_candidate" } }
+        ]
+    };
+    const originalStartWorker = campaignWorker.startWorker;
+    let startedJob = null;
+    campaignWorker.startWorker = async ({ job }) => {
+        startedJob = job;
+        return { ok: true, jobId: job.id };
+    };
+
+    try {
+        const stage = await joinCampaignService.stageCampaign({
+            client,
+            repository,
+            mode: modeRegistry.getMode("ALL_TO_TARGET"),
+            baseConfig: { targetGuildId },
+            requestedAmount: "1",
+            tokenManager
+        });
+        assert.equal(stage.ok, true, stage.error);
+
+        const result = await joinCampaignService.confirmAndStartCampaign({
+            stageId: stage.stageId,
+            client,
+            repository,
+            tokenManager
+        });
+        assert.equal(result.ok, true);
+        assert.equal(startedJob.targetGuildId, targetGuildId);
+    } finally {
+        campaignWorker.startWorker = originalStartWorker;
+        if (startedJob) {
+            repository.markJobCompleted(startedJob.id);
+        }
+        if (prevAllowedGuilds !== undefined) {
+            process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS = prevAllowedGuilds;
+        } else {
+            delete process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS;
         }
     }
 });
@@ -1017,8 +1090,8 @@ test("Join Campaign: Startup recovery fails closed and marks job FAILED when wor
 });
 
 test("Join Campaign: Preflight strictly validates requested amount and bot member permissions", async () => {
-    const prevEnabled = process.env.JOIN_CAMPAIGN_ENABLED;
-    process.env.JOIN_CAMPAIGN_ENABLED = "true";
+    const prevAllowedGuilds = process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS;
+    process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS = "";
     try {
         const targetGuild = {
             id: "123456789012345678",
@@ -1131,10 +1204,10 @@ test("Join Campaign: Preflight strictly validates requested amount and bot membe
         assert.equal(runResBlank.ok, true);
         assert.equal(runResBlank.requestedQuota, 1);
     } finally {
-        if (prevEnabled !== undefined) {
-            process.env.JOIN_CAMPAIGN_ENABLED = prevEnabled;
+        if (prevAllowedGuilds !== undefined) {
+            process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS = prevAllowedGuilds;
         } else {
-            delete process.env.JOIN_CAMPAIGN_ENABLED;
+            delete process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS;
         }
     }
 });
@@ -1205,7 +1278,7 @@ test("P0 audit: seenUsers ownership ensures new candidates are enqueued and not 
         repository: repo,
         tokenManager,
         discord: mockDiscord,
-        config: { enabled: true, maxConcurrency: 2, maxRateLimitRetries: 3 }
+        config: { maxConcurrency: 2, maxRateLimitRetries: 3 }
     });
 
     await workerResult.workerPromise;
@@ -1214,37 +1287,6 @@ test("P0 audit: seenUsers ownership ensures new candidates are enqueued and not 
     assert.equal(job.status, "COMPLETED");
     assert.equal(job.joinedCount, 3);
     assert.deepEqual(joinedUsers.sort(), ["candidate_alpha", "candidate_beta", "candidate_gamma"].sort());
-});
-
-test("P1 audit: master switch blocks startupRecovery when JOIN_CAMPAIGN_ENABLED=false", async () => {
-    const repo = database.repositories.joinCampaign;
-    const jobId = "camp_test_recovery_switch_" + Date.now();
-    repo.createJob({
-        id: jobId,
-        mode: "ALL_TO_TARGET",
-        targetGuildId: "123456789012345678",
-        status: "RUNNING",
-        requestedAmount: 10,
-        selectedAmount: 10
-    });
-
-    const prevEnabled = process.env.JOIN_CAMPAIGN_ENABLED;
-    process.env.JOIN_CAMPAIGN_ENABLED = "false";
-    try {
-        const { runStartupRecovery } = require("../features/joinCampaign/recovery/startupRecovery");
-        const res = await runStartupRecovery({
-            client: { guilds: { cache: new Map() } },
-            repository: repo
-        });
-        assert.equal(res.recovered, false);
-        assert.equal(res.reason, "disabled_by_master_switch");
-    } finally {
-        if (prevEnabled !== undefined) {
-            process.env.JOIN_CAMPAIGN_ENABLED = prevEnabled;
-        } else {
-            delete process.env.JOIN_CAMPAIGN_ENABLED;
-        }
-    }
 });
 
 test("P1 audit: graceful shutdown sets status to INTERRUPTED without completedAt and allows resume", async () => {
@@ -1304,7 +1346,7 @@ test("P1 audit: graceful shutdown sets status to INTERRUPTED without completedAt
         repository: repo,
         tokenManager,
         discord: mockDiscord,
-        config: { enabled: true, maxConcurrency: 1, maxRateLimitRetries: 3 }
+        config: { maxConcurrency: 1, maxRateLimitRetries: 3 }
     });
 
     await workerResult.workerPromise;
@@ -1471,7 +1513,7 @@ test("P1 audit: worker interrupted sleep wakes immediately during long 429 backo
         repository: repo,
         tokenManager,
         discord: mockDiscord,
-        config: { enabled: true, maxConcurrency: 1, maxRateLimitRetries: 3 }
+        config: { maxConcurrency: 1, maxRateLimitRetries: 3 }
     });
 
     // Wait a brief tick for the 429 to register and worker to enter backoff sleep
@@ -1552,7 +1594,7 @@ test("P1 audit: quota met takes precedence over guild full error (status COMPLET
         repository: repo,
         tokenManager,
         discord: mockDiscord,
-        config: { enabled: true, maxConcurrency: 4, maxRateLimitRetries: 1 }
+        config: { maxConcurrency: 4, maxRateLimitRetries: 1 }
     });
 
     await workerResult.workerPromise;
@@ -2737,7 +2779,7 @@ test("P1 regression: candidate cursor is checkpointed to last safely consumed ca
         repository: repo,
         tokenManager: mockTokenManager,
         targetMemberIds: new Set(),
-        config: { enabled: true, batchSize: 200, maxConcurrency: 2 },
+        config: { batchSize: 200, maxConcurrency: 2 },
         discord: {
             addMemberToGuild: async () => {
                 addedCount++;
@@ -2780,7 +2822,7 @@ test("P1 regression: candidate cursor is checkpointed to last safely consumed ca
         repository: repo,
         tokenManager: mockTokenManager,
         targetMemberIds: new Set(),
-        config: { enabled: true, batchSize: 200, maxConcurrency: 4 },
+        config: { batchSize: 200, maxConcurrency: 4 },
         discord: {
             addMemberToGuild: async () => {
                 return { ok: true, status: 201 };
@@ -2900,5 +2942,159 @@ test("P2 regression: batchLogger sendFinalSummaryEmbed with INTERRUPTED status u
     }
 });
 
+test("P1 Audit: runStartupRecovery automatically recovers hard-crashed orphaned RUNNING job", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = "rec_hardcrash_" + Date.now();
 
+    // 1. Simulate hard crash: Job left with status 'RUNNING' in SQLite
+    repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Recovery Target Guild",
+        status: "RUNNING",
+        requestedAmount: 20,
+        selectedAmount: 20,
+        joinedCount: 5,
+        alreadyCount: 0,
+        failedCount: 0,
+        processedCount: 5,
+        recoveryCount: 0
+    });
 
+    // 2. Add an item leased in 'processing' status (as if worker was mid-flight during kill)
+    repo.createItems(testJobId, [
+        { userId: "midflight_user_1", tokenField: "oauth" },
+        { userId: "midflight_user_2", tokenField: "oauth" }
+    ]);
+    const leasedItem = repo.claimNextPendingItem(testJobId, 60000);
+    assert.ok(leasedItem, "Item must be claimed");
+    assert.equal(leasedItem.status, "processing");
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", {
+                    id: "123456789012345678",
+                    name: "Recovery Target Guild",
+                    memberCount: 5,
+                    members: { fetch: async () => new Map() }
+                }]
+            ])
+        }
+    };
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async () => ({ candidates: [], hasMore: false }),
+        getAccessToken: async () => ({ accessToken: "test_token" })
+    };
+
+    // 3. Boot triggers runStartupRecovery
+    const recoveryResult = await runStartupRecovery({
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager
+    });
+
+    assert.equal(recoveryResult.recovered, true, "Hard-crashed job must be recovered");
+    assert.equal(recoveryResult.jobId, testJobId);
+
+    // 4. Recovery count must have been incremented
+    const updatedJob = repo.findJobById(testJobId);
+    assert.equal(updatedJob.recoveryCount, 1, "recoveryCount must be incremented to 1");
+
+    // 5. Leased items must have been released back to pending
+    const pendingCount = repo.countPendingItems(testJobId, "pending");
+    assert.equal(pendingCount, 2, "Both items (including mid-flight leased) must be reset to pending");
+
+    // 6. Cleanup
+    await campaignWorker.waitForCompletion();
+    repo.markJobCompleted(testJobId);
+});
+
+test("P1 Audit: runStartupRecovery cleanly expires orphaned STAGE job and unblocks new campaigns", async () => {
+    const repo = database.repositories.joinCampaign;
+    const stagedJobId = "stage_crash_" + Date.now();
+    const testChannelId = "chan_stage_" + Date.now();
+
+    // 1. Simulate process crash while a modal / preflight was staged
+    repo.createJob({
+        id: stagedJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Stage Target",
+        status: "STAGE",
+        requestedAmount: 50,
+        selectedAmount: 50,
+        joinedCount: 0,
+        startedByChannelId: testChannelId
+    });
+
+    repo.savePanel({
+        channelId: testChannelId,
+        messageId: "msg_stage_1",
+        guildId: "123456789012345678",
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        activeJobId: stagedJobId,
+        lastStatusSummary: "กำลังเตรียมการ..."
+    });
+
+    const mockClient = {
+        channels: {
+            fetch: async () => null
+        }
+    };
+
+    // 2. Boot triggers runStartupRecovery
+    const recoveryResult = await runStartupRecovery({
+        client: mockClient,
+        repository: repo
+    });
+
+    assert.equal(recoveryResult.recovered, false);
+    assert.equal(recoveryResult.reason, "staged_job_expired", "STAGE job must be expired on startup");
+    assert.equal(recoveryResult.jobId, stagedJobId);
+
+    // 3. Staged job must be marked FAILED in SQLite
+    const jobInDb = repo.findJobById(stagedJobId);
+    assert.equal(jobInDb.status, "FAILED");
+    assert.equal(jobInDb.lastError, "staged_job_expired");
+
+    // 4. Panel activeJobId must be cleared
+    const panel = repo.findPanelByChannelId(testChannelId);
+    assert.equal(panel.activeJobId, null, "Panel activeJobId must be reset to null");
+
+    // 5. Creating a new campaign must now succeed without ACTIVE_CAMPAIGN_EXISTS
+    const newJobId = "new_job_after_stage_" + Date.now();
+    const newJob = repo.createJob({
+        id: newJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        targetGuildName: "Stage Target",
+        status: "RUNNING",
+        requestedAmount: 10,
+        selectedAmount: 10
+    });
+    assert.ok(newJob, "New campaign must be accepted after expired stage job cleanup");
+    repo.markJobCompleted(newJobId);
+});
+
+test("P2 Audit: sanitizeUserFacingError handles Discord API 50001, 10004, and database error sanitization", () => {
+    // Discord API error 50001 (Missing Access)
+    const accessErr = sanitizeUserFacingError("DiscordAPIError[50001]: Missing Access");
+    assert.match(accessErr, /บอทไม่มีสิทธิ์ที่จำเป็น/);
+
+    // Discord API error 50013 (Missing Permissions)
+    const permErr = sanitizeUserFacingError("DiscordAPIError[50013]: Missing Permissions");
+    assert.match(permErr, /บอทไม่มีสิทธิ์ที่จำเป็น/);
+
+    // Discord API error 10004 (Unknown Guild)
+    const guildErr = sanitizeUserFacingError("DiscordAPIError[10004]: Unknown Guild");
+    assert.match(guildErr, /ไม่พบเซิร์ฟเวอร์ปลายทาง/);
+
+    // Technical stack trace leakage prevention
+    const stackErr = sanitizeUserFacingError("Error: connect ECONNREFUSED 127.0.0.1:27017\n    at TCPConnectWrap.afterConnect");
+    assert.equal(stackErr.includes("127.0.0.1"), false, "Must not leak internal IP addresses");
+    assert.equal(stackErr.includes("TCPConnectWrap"), false, "Must not leak internal stack traces");
+});

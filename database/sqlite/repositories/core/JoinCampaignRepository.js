@@ -183,6 +183,16 @@ class JoinCampaignRepository {
         return info.changes > 0;
     }
 
+    claimOrphanedRunningJob(jobId) {
+        const now = Date.now();
+        const info = this.db.prepare(`
+            UPDATE join_campaign_jobs
+            SET status = 'INTERRUPTED', updated_at = ?
+            WHERE id = ? AND status = 'RUNNING'
+        `).run(now, String(jobId));
+        return info.changes > 0;
+    }
+
     reconcileJobCounters(jobId) {
         const stats = this.db.prepare(`
             SELECT 

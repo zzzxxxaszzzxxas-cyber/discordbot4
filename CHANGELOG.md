@@ -4,7 +4,6 @@
 
 - **Join Campaign P0/P1/P2 Audit Closure & Production Safeguards:**
   - **P0 `seenUsers` Ownership Decoupling:** Replaced mutation of caller's `seenUsers` in `oauthTokenManager.listAccessTokenCandidates()` with a read-only exclusion check. The worker in `campaignWorker.js` is the sole owner of candidate deduplication, completely eliminating the bug where new candidates were skipped on first encounter.
-  - **P1 Master Switch Gate on Auto-Recovery:** Enforced `config.enabled` check in `startupRecovery.js` and `campaignWorker.startWorker()`. Setting `JOIN_CAMPAIGN_ENABLED=false` now strictly prevents auto-resuming interrupted campaigns on bot reboot.
   - **P1 Resumable Graceful Shutdown (`INTERRUPTED`):** When the bot receives a graceful shutdown signal (`SIGTERM` / `SIGINT`), the running campaign transitions to `INTERRUPTED` without setting `completedAt`. On restart, `startupRecovery` detects `INTERRUPTED` jobs via `findActiveRunningJob()` and auto-resumes them seamlessly toward remaining quota.
   - **P1 Isolated 429 vs 5xx Retry Budgets:** Separated rate limit retries (`rateLimitRetries`) from transient network retries (`networkRetries`), ensuring 5xx errors no longer deplete the 429 rate limit retry budget.
   - **P1 Systemic Alert Dispatch:** Wired `dispatchSystemicAlert()` via `sendWebhookEvent` with `severity: "CRITICAL"` for fatal worker errors, missing target guilds, and max recovery limits, directly dispatching to `ALERT_WEBHOOK_URL`.
@@ -18,8 +17,7 @@
   - **P2 Snowflake Validation Placeholder & Batch Size:** Updated snowflake placeholder text to 17–22 digits in mode modals, and made candidate query batch size configurable (`Math.max(50, Number(config.batchSize || 200))`).
   - **P2 Candidate Token Scope Broadening:** Broadened candidate query in `oauthTokenManager.listAccessTokenCandidates()` to accept valid `encryptedAccessToken` alongside `encryptedRefreshToken`.
   - **P2 Accurate Insert Accounting & Repository Naming:** Updated `createItems()` in `JoinCampaignRepository.js` to return actual inserted row count (`info.changes > 0`) instead of raw array length, and introduced `getTrackedUserIds()` with backward-compatible alias.
-  - **P2 Config & Operational Docs:** Documented all `JOIN_CAMPAIGN_*` environment variables in `.env.example`, added `maxConcurrency` option, corrected migration references in `JOIN_CAMPAIGN_BLUEPRINT.md`, and purged the dead `dryRun` placeholder from `joinCampaignPage.js`.
-  - **Master Switch Gate (`JOIN_CAMPAIGN_ENABLED`):** Enforced across Command Handler (`/join-panel`), Interaction Router, and Service Layer (`stageCampaign`, `confirmAndStartCampaign`, `runPreflight`). Fails closed with an informational Thai alert when disabled.
+  - **P2 Config & Operational Docs:** Documented Join Campaign runtime tuning variables in `.env.example`, added `maxConcurrency` option, corrected migration references in `JOIN_CAMPAIGN_BLUEPRINT.md`, and purged the dead `dryRun` placeholder from `joinCampaignPage.js`.
   - **Fail-Closed Target Guild Resolution:** Fixed cache miss handling in `campaignWorker.js` and `startupRecovery.js`. Target guilds are fetched directly from Discord REST API on cache miss; failure halts the worker and transitions job status to `FAILED` instead of continuing with an empty member set.
   - **Heuristic Cache Fallback Removal:** Removed dangerous `Math.abs(memberCount - cachedMembers) <= 5` heuristic from `getLiveTargetMemberIds()`. All queries require authoritative complete fetches or fail closed.
   - **Bounded 429 Rate-Limit Retries:** Introduced `JOIN_CAMPAIGN_MAX_RATE_LIMIT_RETRIES` (default 3) in `config.js` and `campaignWorker.js`. Rate-limited items are bounded and transition to `failed` (`rate_limited`) rather than causing infinite campaign execution loops.
@@ -645,7 +643,7 @@
 - Added the protected-path guard to local validation and CI, and excluded the protected directory from broad syntax scanning.
 - Documented the five memory-trend diagnostic threshold variables already consumed by `scripts/checkMemoryTrend.js`.
 - Added Owner-only per-user member detail and audited OAuth2 token reveal, plus read-only legacy verified-member listing from `OAuthUser.lastVerify`.
-- Join Campaign is now fail-closed: `JOIN_CAMPAIGN_ENABLED` defaults to disabled and `JOIN_CAMPAIGN_ALLOWED_GUILDS` must explicitly list every target guild.
+- Join Campaign continues to enforce owner, guild, live-membership, and quota validation; the optional `JOIN_CAMPAIGN_ALLOWED_GUILDS` list restricts targets when configured.
 - Switched Render liveness to `/ping`, added `/ready`, `/guilds`, and `/guild/:guildId` compatibility aliases, and added production secret strength checks.
 - Hardened verification review findings: degraded verification startup, dry-run
   diagnostics isolation, graceful verification shutdown drain, redacted member

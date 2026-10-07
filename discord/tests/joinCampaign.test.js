@@ -40,52 +40,39 @@ test("candidateQueryService: countEligibleCandidates accurately counts and filte
     t.assert.equal(readyCount, 3);
 });
 
-test("joinCampaign: stageCampaign rejects when JOIN_CAMPAIGN_ENABLED is false", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
-    const oldEnabled = process.env.JOIN_CAMPAIGN_ENABLED;
-    process.env.JOIN_CAMPAIGN_ENABLED = "false";
+test("joinCampaign: stageCampaign applies guild validation without an activation setting", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
+    const result = await joinCampaignService.stageCampaign({
+        client: { guilds: { cache: new Map() } },
+        repository: {},
+        mode: joinCampaign.getMode("ALL_TO_TARGET"),
+        baseConfig: { targetGuildId: "invalid" }
+    });
 
-    try {
-        const result = await joinCampaignService.stageCampaign({
-            client: {},
-            repository: {},
-            mode: { id: "ALL_TO_TARGET" },
-            baseConfig: { targetGuildId: "123456789012345678" }
-        });
-
-        t.assert.equal(result.ok, false);
-        t.assert.match(result.error, /ปิดใช้งาน/);
-    } finally {
-        if (oldEnabled === undefined) delete process.env.JOIN_CAMPAIGN_ENABLED;
-        else process.env.JOIN_CAMPAIGN_ENABLED = oldEnabled;
-    }
+    t.assert.equal(result.ok, false);
+    t.assert.match(result.error, /17–22 หลัก/);
 });
 
-test("join campaign is default-off and allows guilds when allowlist is unconfigured or matches allowlist", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
+test("join campaign config has no activation setting and preserves guild allowlist behavior", async (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
     const defaults = joinCampaign.getJoinCampaignConfig({});
-    t.assert.equal(defaults.enabled, false);
+    t.assert.equal(Object.hasOwn(defaults, "enabled"), false);
     t.assert.equal(defaults.allowedGuilds.size, 0);
 
     // Unconfigured allowlist permits valid snowflake
     t.assert.equal(joinCampaign.isGuildAllowed("123456789012345678", {
-        enabled: true,
         allowedGuilds: new Set()
     }), true);
 
     // Configured allowlist restricts to allowlist entries
     t.assert.equal(joinCampaign.isGuildAllowed("123456789012345678", {
-        enabled: true,
         allowedGuilds: new Set(["999999999999999999"])
     }), false);
     t.assert.equal(joinCampaign.isGuildAllowed("999999999999999999", {
-        enabled: true,
         allowedGuilds: new Set(["999999999999999999"])
     }), true);
 });
 
 test("join campaign route helpers list and resolve allowed target guilds", (t) => { // NOSONAR -- node:test assertions are not recognized by S2699.
     const oldAllowed = process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS;
-    const oldEnabled = process.env.JOIN_CAMPAIGN_ENABLED;
-    process.env.JOIN_CAMPAIGN_ENABLED = "true";
     process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS = "111111111111111111";
 
     try {
@@ -105,8 +92,6 @@ test("join campaign route helpers list and resolve allowed target guilds", (t) =
     } finally {
         if (oldAllowed === undefined) delete process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS;
         else process.env.JOIN_CAMPAIGN_ALLOWED_GUILDS = oldAllowed;
-        if (oldEnabled === undefined) delete process.env.JOIN_CAMPAIGN_ENABLED;
-        else process.env.JOIN_CAMPAIGN_ENABLED = oldEnabled;
     }
 });
 
