@@ -65,7 +65,7 @@ async function validateGuildTargets({ client, mode, baseConfig = {}, webhookUrl 
     }
 
     if (!isValidSnowflake(targetGuildId)) {
-        return { ok: false, error: "ไอดีเซิร์ฟเวอร์ปลายทางต้องเป็นตัวเลข 17–20 หลัก" };
+        return { ok: false, error: "ไอดีเซิร์ฟเวอร์ปลายทางต้องเป็นตัวเลข 17–22 หลัก" };
     }
 
     if (!isGuildAllowed(targetGuildId, config)) {
@@ -103,7 +103,7 @@ async function validateGuildTargets({ client, mode, baseConfig = {}, webhookUrl 
             return { ok: false, error: "กรุณาระบุไอดีเซิร์ฟเวอร์ต้นทาง" };
         }
         if (!isValidSnowflake(sourceGuildId)) {
-            return { ok: false, error: "ไอดีเซิร์ฟเวอร์ต้นทางต้องเป็นตัวเลข 17–20 หลัก" };
+            return { ok: false, error: "ไอดีเซิร์ฟเวอร์ต้นทางต้องเป็นตัวเลข 17–22 หลัก" };
         }
         if (sourceGuildId === targetGuildId) {
             return { ok: false, error: "เซิร์ฟเวอร์ต้นทางและปลายทางต้องไม่เป็นเซิร์ฟเวอร์เดียวกัน" };

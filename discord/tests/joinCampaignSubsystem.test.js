@@ -1051,6 +1051,24 @@ test("Join Campaign: Preflight strictly validates requested amount and bot membe
             })
         };
 
+        // Invalid target guild snowflake format rejected
+        const validateTargetSnowflakeRes = await validateGuildTargets({
+            mode: { requiresSource: false },
+            client: mockClient,
+            baseConfig: { targetGuildId: "12345" }
+        });
+        assert.equal(validateTargetSnowflakeRes.ok, false);
+        assert.equal(validateTargetSnowflakeRes.error, "ไอดีเซิร์ฟเวอร์ปลายทางต้องเป็นตัวเลข 17–22 หลัก");
+
+        // Invalid source guild snowflake format rejected when mode requires source
+        const validateSourceSnowflakeRes = await validateGuildTargets({
+            mode: { requiresSource: true },
+            client: mockClient,
+            baseConfig: { targetGuildId: "123456789012345678", sourceGuildId: "invalid_source" }
+        });
+        assert.equal(validateSourceSnowflakeRes.ok, false);
+        assert.equal(validateSourceSnowflakeRes.error, "ไอดีเซิร์ฟเวอร์ต้นทางต้องเป็นตัวเลข 17–22 หลัก");
+
         // Missing permissions in target guild fails validation
         const validateMissingPermsRes = await validateGuildTargets({
             mode: { requiresSource: false },

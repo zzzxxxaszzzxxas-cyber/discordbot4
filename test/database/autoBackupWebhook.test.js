@@ -27,7 +27,7 @@ describe("Auto-Backup Metadata & Webhook Safety Suite", () => {
         fs.mkdirSync(testBackupDir, { recursive: true });
 
         db = new Database(tempDbFile);
-        runMigrations(db);
+        runMigrations(db, { backupDir: testBackupDir });
     });
 
     after(() => {

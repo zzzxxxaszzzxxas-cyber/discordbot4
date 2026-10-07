@@ -137,14 +137,22 @@ function createPreMigrationBackup(db, migrationItem, options = {}) {
         return null;
     }
 
-    const backupDir = resolveBackupDir(options.backupDir);
+    let backupDir = options.backupDir ? path.resolve(options.backupDir) : null;
+    if (!backupDir) {
+        // If db is located in a test or scratch directory, isolate backups there
+        if (db.name && (db.name.includes("/test/") || db.name.includes("/scratch") || db.name.includes("/temp"))) {
+            backupDir = path.join(path.dirname(path.resolve(db.name)), "backups");
+        } else {
+            backupDir = resolveBackupDir();
+        }
+    }
     if (!fs.existsSync(backupDir)) {
         fs.mkdirSync(backupDir, { recursive: true });
     }
 
     const maxRetention = resolvePreMigrationRetention(options.preMigrationRetention);
     // Rotate older pre-migration copies first to free space before writing
-    rotatePreMigrationBackups(backupDir, Math.max(0, maxRetention - 1));
+    rotatePreMigrationBackups(backupDir, maxRetention);
 
     // Space check: ensure sufficient filesystem free space
     if (db.name && db.name !== ":memory:" && fs.existsSync(db.name)) {
@@ -160,7 +168,8 @@ function createPreMigrationBackup(db, migrationItem, options = {}) {
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const cleanId = String(migrationItem.migrationId || "migration").replace(/[^a-zA-Z0-9_-]/g, "_");
-    const filename = `sqlite_backup_pre_migration_${cleanId}_${timestamp}.sqlite`;
+    const nonce = crypto.randomBytes(4).toString("hex");
+    const filename = `sqlite_backup_pre_migration_${cleanId}_${timestamp}_${process.pid}_${nonce}.sqlite`;
     const targetPath = path.join(backupDir, filename);
 
     // Escape single quotes for SQL string literal
