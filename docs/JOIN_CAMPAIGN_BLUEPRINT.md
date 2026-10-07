@@ -309,6 +309,7 @@ CREATE TABLE IF NOT EXISTS join_campaign_jobs (
     candidate_cursor TEXT,
     last_error TEXT,
     started_by_user_id TEXT,
+    started_by_channel_id TEXT, -- เพิ่มใน migration 008 สำหรับ panel reconnect และ recovery
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     completed_at INTEGER
@@ -317,7 +318,7 @@ CREATE TABLE IF NOT EXISTS join_campaign_jobs (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_join_campaign_single_active 
 ON join_campaign_jobs((1))
-WHERE status IN ('RUNNING', 'STAGE');
+WHERE status IN ('RUNNING', 'STAGE', 'INTERRUPTED'); -- อัปเดตใน migration 009 ให้ครอบคลุม INTERRUPTED
 
 CREATE TABLE IF NOT EXISTS join_campaign_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -328,6 +329,7 @@ CREATE TABLE IF NOT EXISTS join_campaign_items (
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     leased_until INTEGER NOT NULL DEFAULT 0,
+    processing_started_at INTEGER, -- เพิ่มใน migration 009 สำหรับ crash consistency tracking
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE(campaign_id, user_id)
@@ -340,6 +342,7 @@ CREATE TABLE IF NOT EXISTS join_campaign_panels (
     mode TEXT NOT NULL DEFAULT 'ALL_TO_TARGET',
     source_guild_id TEXT,
     target_guild_id TEXT,
+    active_job_id TEXT, -- เพิ่มใน migration 006 สำหรับ tracking active campaign บน panel
     last_ready_count INTEGER,
     last_status_summary TEXT,
     updated_at INTEGER NOT NULL

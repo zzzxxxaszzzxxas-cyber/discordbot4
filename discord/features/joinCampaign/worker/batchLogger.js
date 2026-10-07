@@ -162,7 +162,8 @@ async function sendFinalSummaryEmbed({
 
     if (finalStatus === "INTERRUPTED") {
         color = 0x5865F2; // Blurple
-        title = `${emoji.refresh} รายงานสถานะการดึงสมาชิก (หยุดชั่วคราวเพื่อรีสตาร์ต)`;
+        const statusEmoji = emoji.refresh || emoji.loading || "🔄";
+        title = `${statusEmoji} รายงานสถานะการดึงสมาชิก (หยุดชั่วคราวเพื่อรีสตาร์ต)`;
         description = `ระบบหยุดทำงานชั่วคราวเนื่องจากบอทปิดระบบ (Graceful Shutdown) และจะกลับมาทำงานต่ออัตโนมัติเมื่อระบบเริ่มใหม่`;
         statusLabel = "หยุดชั่วคราว (รอทำต่ออัตโนมัติ)";
     } else if (finalStatus === "PARTIAL") {

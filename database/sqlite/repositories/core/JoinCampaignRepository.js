@@ -268,7 +268,11 @@ class JoinCampaignRepository {
         const insertMany = this.db.transaction((records) => {
             let count = 0;
             for (const item of records) {
-                const info = stmt.run(String(campaignId), String(item.userId), String(item.tokenField || "oauth"), now, now);
+                const tokenField = String(item.tokenField || "").trim();
+                if (tokenField !== "oauth" && tokenField !== "adminOAuth") {
+                    continue; // Skip invalid token field - fail-closed
+                }
+                const info = stmt.run(String(campaignId), String(item.userId), tokenField, now, now);
                 if (info && info.changes > 0) {
                     count++;
                 }

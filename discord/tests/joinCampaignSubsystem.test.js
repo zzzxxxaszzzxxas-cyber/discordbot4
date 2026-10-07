@@ -2673,5 +2673,232 @@ test("P2 audit: discordAPI.refreshToken forwards AbortSignal and aborts in-fligh
     );
 });
 
+test("P1 regression: candidate cursor is checkpointed to last safely consumed candidate, preventing skip on crash", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `crash_cursor_${Date.now()}`;
+
+    const job = repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "RUNNING",
+        requestedAmount: 150,
+        selectedAmount: 150,
+        joinedCount: 0
+    });
+
+    // 200 candidates available in MongoDB page (rec_001 .. rec_200)
+    const allCandidates = Array.from({ length: 200 }, (_, i) => {
+        const num = String(i + 1).padStart(3, "0");
+        return {
+            _id: `rec_${num}`,
+            recordId: `rec_${num}`,
+            userId: `user_${num}`,
+            tokenField: "oauth"
+        };
+    });
+
+    const queriedAfterIds = [];
+
+    const mockTokenManager = {
+        listAccessTokenCandidates: async ({ afterId, limit = 200 } = {}) => {
+            queriedAfterIds.push(afterId || null);
+            let filtered = allCandidates;
+            if (afterId) {
+                filtered = allCandidates.filter(c => c._id > afterId);
+            }
+            const candidates = filtered.slice(0, limit);
+            const nextCursor = candidates.length > 0 ? candidates[candidates.length - 1]._id : null;
+            return {
+                candidates,
+                nextCursor,
+                hasMore: filtered.length > limit
+            };
+        },
+        getAccessToken: async ({ userId, tokenField }) => {
+            return { ok: true, accessToken: `mock_tok_${userId}` };
+        }
+    };
+
+    const mockClient = {
+        guilds: {
+            cache: new Map([
+                ["123456789012345678", { id: "123456789012345678", name: "Target" }]
+            ])
+        }
+    };
+
+    // First run: Worker loads first queue top-up (100 candidates from 200-candidate page)
+    // Then immediately stop to simulate crash after consuming only the first 100 items.
+    let addedCount = 0;
+    const startResult = await campaignWorker.startWorker({
+        job,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        targetMemberIds: new Set(),
+        config: { enabled: true, batchSize: 200, maxConcurrency: 2 },
+        discord: {
+            addMemberToGuild: async () => {
+                addedCount++;
+                if (addedCount === 5) {
+                    // Simulate crash/interruption while worker has only consumed first batch of items
+                    campaignWorker.stopCurrentWorker();
+                }
+                return { ok: true, status: 201 };
+            }
+        }
+    });
+
+    await startResult.workerPromise;
+
+    // Verify SQLite state after crash:
+    const jobAfterCrash = repo.findJobById(testJobId);
+    assert.equal(jobAfterCrash.status, "INTERRUPTED", "Job must be marked INTERRUPTED on stop");
+
+    // CRUCIAL P1 INVARIANT: candidateCursor must NOT be "rec_200" (end of Mongo page)!
+    // It must strictly be "rec_100" (the last safely consumed candidate)!
+    assert.equal(
+        jobAfterCrash.candidateCursor,
+        "rec_100",
+        "candidate_cursor must be checkpointed only up to last consumed candidate (rec_100), NOT page end (rec_200)"
+    );
+
+    // Verify 100 items were enqueued in join_campaign_items (not 200)
+    const itemsInDb = repo.db.prepare("SELECT count(*) as count FROM join_campaign_items WHERE campaign_id = ?").get(testJobId);
+    assert.equal(itemsInDb.count, 100, "Initial top-up should have enqueued exactly 100 items");
+
+    // NOW SIMULATE RESUME:
+    // Update job status back to RUNNING as startup recovery would do
+    repo.updateJob(testJobId, { status: "RUNNING" });
+    const resumedJob = repo.findJobById(testJobId);
+
+    // Start worker again on resumed job
+    const resumeResult = await campaignWorker.startWorker({
+        job: resumedJob,
+        client: mockClient,
+        repository: repo,
+        tokenManager: mockTokenManager,
+        targetMemberIds: new Set(),
+        config: { enabled: true, batchSize: 200, maxConcurrency: 4 },
+        discord: {
+            addMemberToGuild: async () => {
+                return { ok: true, status: 201 };
+            }
+        }
+    });
+
+    // Let resumed worker process remaining items and top-up candidates 101-200
+    await resumeResult.workerPromise;
+
+    // Verify that mockTokenManager was queried with afterId = 'rec_100' upon resume!
+    assert.ok(
+        queriedAfterIds.includes("rec_100"),
+        "On resume, candidate query must start from 'rec_100' so candidates 101-200 are retrieved"
+    );
+
+    // Check all enqueued items: items 101-150 (up to requested amount 150) must exist in DB!
+    const allEnqueued = repo.db.prepare("SELECT user_id FROM join_campaign_items WHERE campaign_id = ?").all(testJobId);
+    const enqueuedUserSet = new Set(allEnqueued.map(r => r.user_id));
+
+    assert.ok(enqueuedUserSet.has("user_101"), "user_101 must not be skipped!");
+    assert.ok(enqueuedUserSet.has("user_102"), "user_102 must not be skipped!");
+    assert.ok(enqueuedUserSet.has("user_150"), "user_150 must not be skipped!");
+
+    const finalJob = repo.findJobById(testJobId);
+    assert.equal(finalJob.status, "COMPLETED", "Resumed job should complete successfully");
+    assert.equal(finalJob.joinedCount, 150, "Requested quota of 150 must be completely fulfilled");
+});
+
+test("P2 regression: strict tokenField validation rejects invalid values fail-closed", async () => {
+    const repo = database.repositories.joinCampaign;
+    const testJobId = `strict_tok_${Date.now()}`;
+
+    repo.createJob({
+        id: testJobId,
+        mode: "ALL_TO_TARGET",
+        targetGuildId: "123456789012345678",
+        status: "STAGE",
+        requestedAmount: 10,
+        selectedAmount: 10
+    });
+
+    // 1. JoinCampaignRepository.createItems rejects items with invalid tokenField
+    const badItems = [
+        { userId: "bad_user_1", tokenField: "bearer" },
+        { userId: "bad_user_2", tokenField: "" },
+        { userId: "bad_user_3", tokenField: null },
+        { userId: "bad_user_4" }, // missing tokenField
+        { userId: "good_user_1", tokenField: "oauth" },
+        { userId: "good_user_2", tokenField: "adminOAuth" }
+    ];
+
+    const inserted = repo.createItems(testJobId, badItems);
+    assert.equal(inserted, 2, "Only items with strict oauth or adminOAuth tokenField should be inserted");
+
+    const inDb = repo.db.prepare("SELECT user_id, token_field FROM join_campaign_items WHERE campaign_id = ?").all(testJobId);
+    assert.equal(inDb.length, 2);
+    assert.deepEqual(inDb.map(r => r.user_id).sort(), ["good_user_1", "good_user_2"]);
+});
+
+test("P2 regression: batchLogger sendFinalSummaryEmbed with INTERRUPTED status uses valid refresh emoji and never outputs undefined", async () => {
+    const emojis = require("../features/joinCampaign/ui/emojis");
+    const { sendFinalSummaryEmbed } = require("../features/joinCampaign/worker/batchLogger");
+    const https = require("node:https");
+
+    // Verify ui/emojis defines refresh
+    assert.ok(emojis.refresh, "emojis.refresh must be defined");
+    assert.equal(typeof emojis.refresh, "string");
+    assert.notEqual(emojis.refresh, "undefined");
+
+    let sentPayload = null;
+    const origRequest = https.request;
+    https.request = (url, options, callback) => {
+        return {
+            write: (data) => {
+                try { sentPayload = JSON.parse(data); } catch (_) {}
+            },
+            end: () => {
+                if (callback) {
+                    callback({
+                        statusCode: 204,
+                        resume: () => {}
+                    });
+                }
+            },
+            on: () => {},
+            destroy: () => {}
+        };
+    };
+
+    try {
+        await sendFinalSummaryEmbed({
+            webhookUrl: "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz_12345",
+            mode: { label: "ทั้งระบบ -> ปลายทาง" },
+            targetGuildName: "Target Server",
+            targetGuildId: "123456789012345678",
+            requestedQuota: 10,
+            joinedCount: 5,
+            alreadyCount: 0,
+            failedCount: 0,
+            processedCount: 5,
+            durationMs: 1000,
+            finalStatus: "INTERRUPTED"
+        });
+
+        assert.ok(sentPayload, "Webhook payload must be sent");
+        const embed = sentPayload.embeds?.[0];
+        assert.ok(embed, "Embed must be present");
+        assert.ok(embed.title, "Title must be present");
+
+        // Critical assertion: title must not contain 'undefined'
+        assert.equal(embed.title.includes("undefined"), false, "Title must NOT contain 'undefined'");
+        assert.ok(embed.title.includes("รายงานสถานะการดึงสมาชิก (หยุดชั่วคราวเพื่อรีสตาร์ต)"));
+        assert.equal(embed.color, 0x5865F2, "Interrupted color must be blurple (0x5865F2)");
+    } finally {
+        https.request = origRequest;
+    }
+});
+
 
 

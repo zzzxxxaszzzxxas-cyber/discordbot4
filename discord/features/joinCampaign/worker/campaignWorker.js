@@ -31,10 +31,6 @@ function dispatchSystemicAlert({ code, title, description, error, details = {} }
     } catch (_) {}
 }
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
-}
-
 function randomJitter(minMs = 100, maxMs = 500) {
     return Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 }
@@ -262,7 +258,7 @@ class CampaignWorker {
             } catch (_) {}
         };
 
-        // 3. Initialize candidate stream generator with onPage cursor checkpointing
+        // 3. Initialize candidate stream generator
         const candidateStream = streamCandidates({
             mode,
             baseConfig: {
@@ -272,15 +268,7 @@ class CampaignWorker {
             tokenManager,
             batchSize: Math.max(50, Number(config.batchSize || 200)),
             startCursor: candidateCursor,
-            seenUsers,
-            onPage: ({ nextCursor }) => {
-                if (nextCursor && nextCursor !== candidateCursor) {
-                    candidateCursor = nextCursor;
-                    try {
-                        repository.updateJob(job.id, { candidateCursor });
-                    } catch (_) {}
-                }
-            }
+            seenUsers
         });
 
         let streamExhausted = false;
@@ -292,6 +280,8 @@ class CampaignWorker {
             if (pendingCount >= 40) return;
 
             const itemsToInsert = [];
+            let lastConsumedCursor = candidateCursor;
+
             while (itemsToInsert.length < 100) {
                 const nextItem = await candidateStream.next();
                 if (nextItem.done) {
@@ -300,22 +290,39 @@ class CampaignWorker {
                 }
 
                 const { candidate, cursor } = nextItem.value || {};
-                if (cursor) candidateCursor = cursor;
+                if (cursor) {
+                    lastConsumedCursor = cursor;
+                }
                 if (!candidate) continue;
 
                 const userId = String(candidate.userId || candidate.discord?.userId || "").trim();
                 if (!userId || seenUsers.has(userId)) continue;
+
+                // Strict tokenField validation (fail-closed, no fallback)
+                const tokenField = String(candidate.tokenField || "").trim();
+                if (tokenField !== "oauth" && tokenField !== "adminOAuth") {
+                    console.warn(`[JoinCampaign] Candidate ${userId} has invalid tokenField "${tokenField}". Skipping.`);
+                    continue;
+                }
+
                 seenUsers.add(userId);
 
                 itemsToInsert.push({
                     userId,
-                    tokenField: candidate.tokenField || "oauth"
+                    tokenField
                 });
             }
 
             if (itemsToInsert.length > 0) {
                 repository.createItems(job.id, itemsToInsert);
-                repository.updateJob(job.id, { candidateCursor });
+            }
+
+            // Checkpoint cursor only up to the last safely consumed candidate
+            if (lastConsumedCursor && lastConsumedCursor !== candidateCursor) {
+                candidateCursor = lastConsumedCursor;
+                try {
+                    repository.updateJob(job.id, { candidateCursor });
+                } catch (_) {}
             }
         };
 
@@ -493,12 +500,18 @@ class CampaignWorker {
                             return;
                         }
 
+                        const itemTokenField = String(item.tokenField || "").trim();
+                        if (itemTokenField !== "oauth" && itemTokenField !== "adminOAuth") {
+                            await recordItemOutcome({ userId, status: "failed", error: "invalid_token_field" });
+                            return;
+                        }
+
                         // STEP 2: JIT Token Retrieval & Refresh (Passing configured refreshMarginMs and abort signal)
                         let tokenResult;
                         try {
                             tokenResult = await tokenManager.getAccessToken({
                                 userId,
-                                tokenField: item.tokenField || "oauth",
+                                tokenField: itemTokenField,
                                 marginMs: config.refreshMarginMs,
                                 env: process.env,
                                 signal: this._abortController?.signal

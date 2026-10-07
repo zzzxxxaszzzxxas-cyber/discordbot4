@@ -33,6 +33,8 @@ async function* streamCandidates({
         const candidates = page?.candidates !== undefined ? page.candidates : (Array.isArray(page) ? page : []);
         const nextCursor = page?.nextCursor ?? (candidates.length > 0 && (candidates[candidates.length - 1]?._id || candidates[candidates.length - 1]?.recordId) ? String(candidates[candidates.length - 1]._id || candidates[candidates.length - 1].recordId) : null);
 
+        // Note: onPage is intended for telemetry/stats only; persistent job cursors must be
+        // checkpointed by the consumer after items are safely enqueued, not on page fetch.
         if (typeof onPage === "function") {
             try {
                 const pagePayload = (page && typeof page === "object")
@@ -43,7 +45,9 @@ async function* streamCandidates({
         }
 
         for (const candidate of candidates) {
-            const cursor = candidate._id || candidate.recordId ? String(candidate._id || candidate.recordId) : null;
+            const cursor = (candidate._id || candidate.recordId || candidate.id)
+                ? String(candidate._id || candidate.recordId || candidate.id)
+                : null;
             yield { candidate, cursor };
         }
 

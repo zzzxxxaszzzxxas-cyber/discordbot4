@@ -1,5 +1,4 @@
 const joinCampaign = require("../features/joinCampaign/index");
-const { getDiscordGuildIconUrl } = require("../core/webhooks");
 
 function listJoinCampaignTargets(client, campaignConfig = joinCampaign.getJoinCampaignConfig()) {
     const guilds = Array.from(client?.guilds?.cache?.values?.() || []);

@@ -20,5 +20,6 @@ module.exports = {
     no_entry: emojis.no_entry || "⛔",
     owner: emojis.owner || "👑",
     activate: emojis.activate || "▶️",
-    disable: emojis.disable || "⏹️"
+    disable: emojis.disable || "⏹️",
+    refresh: emojis.loading_circle || emojis.loading || "🔄"
 };
